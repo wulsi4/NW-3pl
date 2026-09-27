@@ -4,6 +4,7 @@ import sqlite3
 import io
 import random
 import base64
+from datetime import date
 
 st.set_page_config(page_title="3PL Nord Wheel", layout="wide")
 
@@ -70,7 +71,10 @@ def init_db():
     
     cursor.execute('''CREATE TABLE IF NOT EXISTS pallets (
         lpn TEXT PRIMARY KEY,
-        client TEXT
+        client TEXT,
+        batch_name TEXT,
+        arrival_date TEXT,
+        status TEXT
     )''')
     
     cursor.execute('''CREATE TABLE IF NOT EXISTS pallet_locations (
@@ -234,7 +238,7 @@ elif st.session_state.page == "client_detail":
         
     st.markdown("#### Активные паллеты и ячейки:")
     client_pallets_df = pd.read_sql("""
-        SELECT p.lpn as 'LPN Паллеты', GROUP_CONCAT(pl.address) as 'Ячейки'
+        SELECT p.lpn as 'LPN Паллеты', p.batch_name as 'Партия', p.arrival_date as 'Дата', p.status as 'Статус', GROUP_CONCAT(pl.address) as 'Ячейки'
         FROM pallets p
         LEFT JOIN pallet_locations pl ON p.lpn = pl.lpn
         WHERE p.client = ?
@@ -304,116 +308,123 @@ elif st.session_state.page == "map":
     st.metric("Найдено ячеек", len(loc_df))
     st.dataframe(loc_df.head(150), use_container_width=True)
 
-# --- РАЗДЕЛ 3: ПРИХОД ПАРТИИ (1С СТИЛЬ С КРАСНОЙ ИНДИКАЦИЕЙ) ---
+# --- РАЗДЕЛ 3: ПРИХОД (С ПРЕДУПРЕЖДЕНИЕМ ПРИ ЗАНЯТОЙ ЯЧЕЙКЕ) ---
 elif st.session_state.page == "inbound":
     st.header("📥 Документ прихода партии товаров")
-    st.write("Сформируйте партию целиком. Занятые ячейки подсвечены красным цветом.")
+    st.write("Сформируйте партию целиком. Если ячейка уже занята, система выдаст предупреждение, но позволит разместить паллету.")
     
     clients_list = pd.read_sql("SELECT name FROM clients", conn)["name"].tolist()
     
     if not clients_list:
         st.warning("Сначала добавьте хотя бы одного клиента в разделе «Клиенты и тарифы».")
     else:
-        selected_client = st.selectbox("Поклажедатель", clients_list)
-        batch_number = st.text_input("Номер приходной накладной / партии", value=f"Партия-{random.randint(100, 999)}")
-        
-        if "batch_pallets" not in st.session_state:
-            st.session_state.batch_pallets = []
-            
-        st.markdown("---")
-        st.subheader("Табличная часть: Паллеты в партии")
-        
-        if st.button("➕ Добавить еще паллет в партию"):
-            st.session_state.batch_pallets.append({
-                "lpn": f"LPN-{random.randint(1000, 9999)}",
-                "cell": "",
-                "items": [{"sku": "SKU-001", "name": "Товар", "qty": 10}]
-            })
+        with st.container():
+            st.markdown("### Шапка приходного документа")
+            col_h1, col_h2 = st.columns(2)
+            with col_h1:
+                inb_client = st.selectbox("Клиент (Поклажедатель)", clients_list)
+                inb_batch = st.text_input("Название всей партии / Накладной", value=f"Партия-{random.randint(100, 999)}")
+            with col_h2:
+                inb_date = st.date_input("Дата прихода", value=date.today())
+                inb_status = st.selectbox("Статус документа", ["Активный", "Отложено (Черновик)"])
+                inb_count = st.number_input("Общее количество паллет", min_value=1, max_value=100, value=2)
+
+        if "wizard_step" not in st.session_state:
+            st.session_state.wizard_step = 1
+
+        if st.button("📄 Сгенерировать страницы паллет для заполнения"):
+            st.session_state.wizard_pallets = []
+            for i in range(inb_count):
+                st.session_state.wizard_pallets.append({
+                    "lpn": f"LPN-{random.randint(1000, 9999)}",
+                    "cell": "",
+                    "items": [{"sku": f"SKU-{i+1:03d}", "name": f"Товар партии {i+1}", "qty": 10}]
+                })
+            st.session_state.wizard_step = 2
             st.rerun()
+
+        if st.session_state.get("wizard_step", 1) == 2 and "wizard_pallets" in st.session_state:
+            st.markdown("---")
+            st.subheader(f"Заполнение паллет для партии: {inb_batch} ({len(st.session_state.wizard_pallets)} шт.)")
             
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT address, status FROM locations")
-        all_cells_status = {row[0]: row[1] for row in cursor.fetchall()}
-        all_cells_list = list(all_cells_status.keys())
-        
-        for idx, pal in enumerate(st.session_state.batch_pallets):
-            with st.container():
-                st.markdown(f"**Паллета #{idx+1}**")
-                col_p1, col_p2 = st.columns([1, 2])
-                with col_p1:
-                    pal["lpn"] = st.text_input(f"Номер LPN #{idx+1}", value=pal["lpn"], key=f"lpn_{idx}")
-                with col_p2:
-                    cell_options = []
-                    for c in all_cells_list:
-                        st_val = all_cells_status.get(c, 'FREE')
-                        if st_val == 'OCCUPIED':
-                            cell_options.append(f"🔴 [ЗАНЯТА] {c}")
-                        else:
-                            cell_options.append(f"🟢 [СВОБОДНА] {c}")
+            cursor = conn.cursor()
+            cursor.execute("SELECT address, status FROM locations")
+            all_cells_status = {row[0]: row[1] for row in cursor.fetchall()}
+            all_cells_list = list(all_cells_status.keys())
+
+            for idx, pal in enumerate(st.session_state.wizard_pallets):
+                with st.expander(f"📦 Паллета #{idx+1} (LPN: {pal['lpn']})", expanded=(idx==0)):
+                    col_p1, col_p2 = st.columns([1, 2])
+                    with col_p1:
+                        pal["lpn"] = st.text_input(f"Номер LPN #{idx+1}", value=pal["lpn"], key=f"wiz_lpn_{idx}")
+                    with col_p2:
+                        cell_options = []
+                        for c in all_cells_list:
+                            st_val = all_cells_status.get(c, 'FREE')
+                            if st_val == 'OCCUPIED':
+                                cell_options.append(f"🔴 [ЗАНЯТА] {c}")
+                            else:
+                                cell_options.append(f"🟢 [СВОБОДНА] {c}")
+                        
+                        selected_cell_display = st.selectbox(f"Ячейка размещения #{idx+1} (Формат А-1-1-1)", cell_options, key=f"wiz_cell_{idx}")
+                        pal["cell"] = selected_cell_display.split("] ")[1] if "] " in selected_cell_display else selected_cell_display
                     
-                    selected_cell_display = st.selectbox(f"Ячейка размещения #{idx+1} (Формат А-1-1-1)", cell_options, key=f"cell_{idx}")
-                    pal["cell"] = selected_cell_display.split("] ")[1] if "] " in selected_cell_display else selected_cell_display
-                
-                st.write("Состав позиций на этой паллете:")
-                for item_idx, itm in enumerate(pal["items"]):
-                    ic1, ic2, ic3, ic4 = st.columns([2, 3, 1, 1])
-                    with ic1:
-                        itm["sku"] = st.text_input("Артикул", value=itm["sku"], key=f"sku_{idx}_{item_idx}")
-                    with ic2:
-                        itm["name"] = st.text_input("Наименование", value=itm["name"], key=f"name_{idx}_{item_idx}")
-                    with ic3:
-                        itm["qty"] = st.number_input("Кол-во", value=itm["qty"], min_value=1, key=f"qty_{idx}_{item_idx}")
-                    with ic4:
-                        if st.button("🗑️ Удали", key=f"del_item_{idx}_{item_idx}"):
-                            pal["items"].pop(item_idx)
-                            st.rerun()
-                            
-                if st.button("➕ Добавить позицию на паллету", key=f"add_item_{idx}"):
-                    pal["items"].append({"sku": "SKU-002", "name": "Еще товар", "qty": 5})
-                    st.rerun()
-                    
-                if st.button(f"❌ Удалить паллету #{idx+1} из партии", key=f"del_pal_{idx}"):
-                    st.session_state.batch_pallets.pop(idx)
-                    st.rerun()
-                st.markdown("---")
-                
-        if st.button("💾 Провести приход всей партии"):
-            if not st.session_state.batch_pallets:
-                st.error("Добавьте хотя бы одну паллету в партию!")
-            else:
-                try:
-                    has_error = False
-                    for pal in st.session_state.batch_pallets:
-                        c_stat = all_cells_status.get(pal["cell"], 'FREE')
-                        if c_stat == 'OCCUPIED':
-                            st.error(f"Ячейка {pal['cell']} уже занята! Выберите свободную ячейку.")
-                            has_error = True
-                            break
-                    
-                    if not has_error:
-                        for pal in st.session_state.batch_pallets:
-                            lpn = pal["lpn"]
-                            cell = pal["cell"]
-                            
-                            cursor.execute("INSERT INTO pallets (lpn, client) VALUES (?, ?)", (lpn, selected_client))
-                            cursor.execute("INSERT INTO pallet_locations (lpn, address) VALUES (?, ?)", (lpn, cell))
-                            cursor.execute("UPDATE locations SET status = 'OCCUPIED' WHERE address = ?", (cell,))
-                            
-                            for itm in pal["items"]:
-                                cursor.execute("INSERT INTO pallet_items (lpn, sku, item_name, qty) VALUES (?, ?, ?, ?)", 
-                                               (lpn, itm["sku"], itm["name"], itm["qty"]))
+                    st.write("Позиции на паллете:")
+                    for item_idx, itm in enumerate(pal["items"]):
+                        ic1, ic2, ic3, ic4 = st.columns([2, 3, 1, 1])
+                        with ic1:
+                            itm["sku"] = st.text_input("Артикул", value=itm["sku"], key=f"wiz_sku_{idx}_{item_idx}")
+                        with ic2:
+                            itm["name"] = st.text_input("Наименование", value=itm["name"], key=f"wiz_name_{idx}_{item_idx}")
+                        with ic3:
+                            itm["qty"] = st.number_input("Кол-во", value=itm["qty"], min_value=1, key=f"wiz_qty_{idx}_{item_idx}")
+                        with ic4:
+                            if st.button("🗑️ Удали", key=f"wiz_del_item_{idx}_{item_idx}"):
+                                pal["items"].pop(item_idx)
+                                st.rerun()
                                 
-                        conn.commit()
-                        st.success(f"Партия '{batch_number}' успешно проведена! Оприходовано паллет: {len(st.session_state.batch_pallets)}.")
-                        st.session_state.batch_pallets = []
+                    if st.button("➕ Добавить позицию", key=f"wiz_add_item_{idx}"):
+                        pal["items"].append({"sku": "SKU-999", "name": "Новый товар", "qty": 5})
                         st.rerun()
+
+            st.markdown("---")
+            if st.button("💾 Провести и сохранить приходную партию"):
+                try:
+                    occupied_warnings = []
+                    for pal in st.session_state.wizard_pallets:
+                        c_stat = all_cells_status.get(pal["cell"], 'FREE')
+                        if c_stat == 'OCCUPIED' and inb_status == "Активный":
+                            occupied_warnings.append(pal["cell"])
+                    
+                    if occupied_warnings:
+                        st.warning(f"⚠️ Предупреждение: Вы выбрали уже занятые ячейки: {', '.join(set(occupied_warnings))}. Размещение разрешено (несколько паллет в одной ячейке).")
+                    
+                    for pal in st.session_state.wizard_pallets:
+                        lpn = pal["lpn"]
+                        cell = pal["cell"]
+                        
+                        cursor.execute("INSERT OR REPLACE INTO pallets (lpn, client, batch_name, arrival_date, status) VALUES (?, ?, ?, ?, ?)", 
+                                       (lpn, inb_client, inb_batch, str(inb_date), inb_status))
+                        
+                        if inb_status == "Активный" and cell:
+                            cursor.execute("INSERT OR REPLACE INTO pallet_locations (lpn, address) VALUES (?, ?)", (lpn, cell))
+                            cursor.execute("UPDATE locations SET status = 'OCCUPIED' WHERE address = ?", (cell,))
+                        
+                        for itm in pal["items"]:
+                            cursor.execute("INSERT INTO pallet_items (lpn, sku, item_name, qty) VALUES (?, ?, ?, ?)", 
+                                           (lpn, itm["sku"], itm["name"], itm["qty"]))
+                            
+                    conn.commit()
+                    st.success(f"Приход партии '{inb_batch}' успешно сохранен! Статус: {inb_status}.")
+                    st.session_state.wizard_step = 1
+                    st.session_state.wizard_pallets = []
+                    st.rerun()
                 except Exception as e:
-                    st.error(f"Ошибка при проведении: {e}")
+                    st.error(f"Ошибка при сохранении: {e}")
 
     st.subheader("Текущие паллеты на складе")
     pallets_df = pd.read_sql("""
-        SELECT p.lpn as 'LPN', p.client as 'Клиент', GROUP_CONCAT(pl.address) as 'Ячейки' 
+        SELECT p.lpn as 'LPN', p.client as 'Клиент', p.batch_name as 'Партия', p.arrival_date as 'Дата', p.status as 'Статус', GROUP_CONCAT(pl.address) as 'Ячейки' 
         FROM pallets p 
         LEFT JOIN pallet_locations pl ON p.lpn = pl.lpn 
         GROUP BY p.lpn
@@ -423,10 +434,10 @@ elif st.session_state.page == "inbound":
     else:
         st.info("Палет на складе пока нет.")
 
-# --- РАЗДЕЛ 4: СПИСАНИЕ И РЕДАКЦИЯ ПАЛЛЕТ ---
+# --- РАЗДЕЛ 4: СПИСАНИЕ И РЕДАКЦИЯ ПАЛЛЕТ (С ПРОВЕРКОЙ МУЛЬТИ-ПАЛЛЕТ В ЯЧЕЙКАХ) ---
 elif st.session_state.page == "management":
     st.header("🔄 Списание товара и редакция ячеек")
-    st.write("Управляйте хранящимися паллетами: редактируйте состав или списывайте товар, полностью освобождая ячейки склада.")
+    st.write("Управляйте хранящимися паллетами: редактируйте состав или списывайте товар. Ячейка освободится только тогда, когда из нее уйдут все паллеты.")
     
     pallets_list = pd.read_sql("SELECT lpn FROM pallets", conn)["lpn"].tolist()
     
@@ -436,12 +447,13 @@ elif st.session_state.page == "management":
         selected_lpn = st.selectbox("Выберите паллету (LPN) для управления:", pallets_list)
         
         cursor = conn.cursor()
-        cursor.execute("SELECT client FROM pallets WHERE lpn = ?", (selected_lpn,))
+        cursor.execute("SELECT client, batch_name FROM pallets WHERE lpn = ?", (selected_lpn,))
         p_info = cursor.fetchone()
         cursor.execute("SELECT address FROM pallet_locations WHERE lpn = ?", (selected_lpn,))
         p_cells = [row[0] for row in cursor.fetchall()]
         
         st.markdown(f"**Клиент:** {p_info[0] if p_info else 'Не найден'}")
+        st.markdown(f"**Партия:** {p_info[1] if p_info else 'Не указана'}")
         st.markdown(f"**Занимаемые ячейки:** {', '.join(p_cells)}")
         
         items_df = pd.read_sql("SELECT id, sku, item_name, qty FROM pallet_items WHERE lpn = ?", conn, params=(selected_lpn,))
@@ -451,19 +463,23 @@ elif st.session_state.page == "management":
         col_m1, col_m2 = st.columns(2)
         
         with col_m1:
-            st.markdown("### 🗑️ Списание паллеты (Освобождение ячеек)")
-            st.warning("При списании паллета удаляется, а все занятые ею ячейки переводятся в статус «Свободна».")
+            st.markdown("### 🗑️ Списание паллеты")
+            st.warning("При списании паллет проверяется наличие других паллет в этих же ячейках.")
             if st.button("🔴 Списать паллету полностью"):
                 try:
                     for cell in p_cells:
-                        cursor.execute("UPDATE locations SET status = 'FREE' WHERE address = ?", (cell,))
+                        # Проверяем, остались ли еще другие паллеты в этой ячейке
+                        cursor.execute("SELECT COUNT(*) FROM pallet_locations WHERE address = ? AND lpn != ?", (cell, selected_lpn))
+                        other_pallets_count = cursor.fetchone()[0]
+                        if other_pallets_count == 0:
+                            cursor.execute("UPDATE locations SET status = 'FREE' WHERE address = ?", (cell,))
                     
                     cursor.execute("DELETE FROM pallet_locations WHERE lpn = ?", (selected_lpn,))
                     cursor.execute("DELETE FROM pallet_items WHERE lpn = ?", (selected_lpn,))
                     cursor.execute("DELETE FROM pallets WHERE lpn = ?", (selected_lpn,))
                     
                     conn.commit()
-                    st.success(f"Паллета {selected_lpn} успешно списана! Ячейки ({', '.join(p_cells)}) снова свободны.")
+                    st.success(f"Паллета {selected_lpn} успешно списана!")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Ошибка при списании: {e}")
@@ -493,7 +509,7 @@ elif st.session_state.page == "reports":
         p_lpn = st.selectbox("Выберите паллету для печати A4 листа", pallets_list)
         
         cursor = conn.cursor()
-        cursor.execute("SELECT client FROM pallets WHERE lpn = ?", (p_lpn,))
+        cursor.execute("SELECT client, batch_name, arrival_date FROM pallets WHERE lpn = ?", (p_lpn,))
         p_data = cursor.fetchone()
         cursor.execute("SELECT address FROM pallet_locations WHERE lpn = ?", (p_lpn,))
         locs_data = [row[0] for row in cursor.fetchall()]
@@ -503,7 +519,7 @@ elif st.session_state.page == "reports":
         if p_data:
             st.markdown("---")
             st.markdown(f"<h2 style='text-align: center; color: #0284c7;'>📄 ПАЛЛЕТНЫЙ ЛИСТ (A4) — 3PL Nord Wheel</h2>", unsafe_allow_html=True)
-            st.markdown(f"### **Клиент:** {p_data[0]}")
+            st.markdown(f"### **Клиент:** {p_data[0]} | **Партия:** {p_data[1]} | **Дата:** {p_data[2]}")
             st.markdown(f"<h1>ID ПАЛЛЕТЫ: {p_lpn}</h1>", unsafe_allow_html=True)
             st.markdown(f"**Ячейки размещения:** {', '.join(locs_data)}")
             st.markdown("#### Позиционный состав груза (для сборки):")
@@ -514,7 +530,7 @@ elif st.session_state.page == "reports":
             
     st.subheader("Экспорт всех данных в Excel")
     full_pallets_df = pd.read_sql("""
-        SELECT p.lpn as 'Номер паллеты', p.client as 'Клиент', GROUP_CONCAT(pl.address) as 'Ячейки' 
+        SELECT p.lpn as 'Номер паллеты', p.client as 'Клиент', p.batch_name as 'Партия', p.arrival_date as 'Дата прихода', GROUP_CONCAT(pl.address) as 'Ячейки' 
         FROM pallets p 
         LEFT JOIN pallet_locations pl ON p.lpn = pl.lpn 
         GROUP BY p.lpn
@@ -540,6 +556,7 @@ elif st.session_state.page == "billing":
             FROM pallets p
             JOIN pallet_locations pl ON p.lpn = pl.lpn
             JOIN locations l ON pl.address = l.address
+            WHERE p.status = 'Активный'
             GROUP BY p.client, l.zone
         """
         snapshot_df = pd.read_sql(billing_query, conn)
@@ -582,6 +599,6 @@ elif st.session_state.page == "billing":
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         else:
-            st.info("Нет данных для расчета (склад пуст или не заведены тарифы клиентов).")
+            st.info("Нет данных для расчета (склад пуст или нет активных паллет).")
 
 conn.close()

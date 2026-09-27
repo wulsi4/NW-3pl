@@ -6,7 +6,7 @@ import random
 
 st.set_page_config(page_title="3PL Nord Wheel", layout="wide")
 
-# --- КАСТОМНЫЙ CSS ДЛЯ БЕЛО-СИНЕЙ СТИЛИСТИКИ И КРУГЛЫХ КНОПОК ---
+# --- КАСТОМНЫЙ CSS ДЛЯ БЕЛО-СИНЕ-КРАСНОЙ СТИЛИСТИКИ И КРУГЛЫХ КНОПОК ---
 st.markdown("""
     <style>
     .stApp {
@@ -26,7 +26,6 @@ st.markdown("""
         padding: 0.6rem 1.2rem;
         box-shadow: 0 4px 6px -1px rgba(0, 132, 199, 0.2);
         transition: all 0.3s ease;
-        width: 100%;
     }
     div.stButton > button:hover, div.stFormSubmitButton > button:hover, .stDownloadButton > button:hover {
         background-color: #0369a1 !important;
@@ -50,8 +49,8 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS clients (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT UNIQUE,
-        tariff_A REAL,
-        tariff_B REAL
+        tariff_A REAL DEFAULT 30.0,
+        tariff_B REAL DEFAULT 20.0
     )''')
     
     cursor.execute('''CREATE TABLE IF NOT EXISTS locations (
@@ -88,13 +87,11 @@ def init_db():
     if cursor.fetchone()[0] == 0:
         locs = []
         zones_a_letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'K', 'L', 'M']
-        # Упрощенная структура Зоны А: Линия, Секция (1-6), Ярус (1-5) без лишней глубины
         for aisle in zones_a_letters:
             for sec in range(1, 7):
                 for tier in range(1, 6):
                     addr = f"A-{aisle}-{sec:02d}-{tier}"
                     locs.append((addr, "A", "FREE"))
-        # Зона B: 150 паллетомест
         for i in range(1, 151):
             addr = f"B-{i:03d}"
             locs.append((addr, "B", "FREE"))
@@ -113,13 +110,18 @@ def convert_df_to_excel(df):
 
 if "page" not in st.session_state:
     st.session_state.page = "clients"
+if "selected_client" not in st.session_state:
+    st.session_state.selected_client = None
 
-# --- ШАПКА ПРИЛОЖЕНИЯ ---
-st.markdown("<h1 style='text-align: center; color: #0284c7;'>🛞 3PL Nord Wheel</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: #64748b; margin-top: -15px;'>Система ответственного хранения грузов и биллинга</p>", unsafe_allow_html=True)
-st.markdown("---")
+# --- ШАПКА ПРИЛОЖЕНИЯ В БЕЛО-СИНЕ-КРАСНЫХ ТОНАХ ---
+st.markdown("""
+    <div style='background: linear-gradient(135deg, #1d4ed8 0%, #0284c7 50%, #dc2626 100%); padding: 25px; border-radius: 16px; text-align: center; color: white; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); margin-bottom: 25px;'>
+        <h1 style='color: white; margin: 0; font-size: 34px; font-weight: 800; text-shadow: 0 2px 4px rgba(0,0,0,0.2);'>🛞 3PL Nord Wheel</h1>
+        <p style='margin: 8px 0 0 0; font-size: 15px; color: #f1f5f9; font-weight: 500;'>Профессиональная система ответственного хранения грузов и биллинга</p>
+    </div>
+""", unsafe_allow_html=True)
 
-# --- ЛЕВАЯ ПАНЕЛЬ С КНОПКАМИ И ЛОГОТИПОМ ---
+# --- ЛЕВАЯ ПАНЕЛЬ С ЛОГОТИПОМ И КНОПКАМИ ---
 with st.sidebar:
     try:
         st.image("logo.png", use_container_width=True)
@@ -132,9 +134,10 @@ with st.sidebar:
 
     if st.button("👥 Клиенты и тарифы", use_container_width=True):
         st.session_state.page = "clients"
+        st.session_state.selected_client = None
     if st.button("🗺️ Карта склада и ячейки", use_container_width=True):
         st.session_state.page = "map"
-    if st.button("📥 Приемка и размещение", use_container_width=True):
+    if st.button("📥 Приемка партии (1С стиль)", use_container_width=True):
         st.session_state.page = "inbound"
     if st.button("🖨️ Печать листов А4 и Отчеты", use_container_width=True):
         st.session_state.page = "reports"
@@ -143,27 +146,25 @@ with st.sidebar:
 
 conn = get_connection()
 
-# --- РАЗДЕЛ 1: КЛИЕНТЫ И ТАРИФЫ ---
+# --- РАЗДЕЛ 1: КЛИЕНТЫ И ТАРИФЫ (И СТРАНИЦА КАРТОЧКИ КЛИЕНТА) ---
 if st.session_state.page == "clients":
-    st.header("👥 Регистрация и карточки поклажедателей")
+    st.header("👥 Регистрация и список поклажедателей")
     
     with st.expander("➕ Добавить нового клиента"):
         with st.form("add_client_form"):
             c_name = st.text_input("Название компании")
-            t_a = st.number_input("Тариф Зона А (руб/паллето-день)", value=30.0)
-            t_b = st.number_input("Тариф Зона B (руб/паллето-день)", value=20.0)
             submitted = st.form_submit_button("Зарегистрировать клиента")
             if submitted and c_name:
                 try:
                     cursor = conn.cursor()
-                    cursor.execute("INSERT INTO clients (name, tariff_A, tariff_B) VALUES (?, ?, ?)", (c_name, t_a, t_b))
+                    cursor.execute("INSERT INTO clients (name) VALUES (?)", (c_name,))
                     conn.commit()
                     st.success(f"Клиент '{c_name}' успешно зарегистрирован!")
                     st.rerun()
                 except sqlite3.IntegrityError:
                     st.error("Клиент с таким названием уже существует!")
 
-    st.subheader("Сводная таблица контрагентов")
+    st.subheader("Список контрагентов")
     clients_df = pd.read_sql("SELECT * FROM clients", conn)
     if not clients_df.empty:
         summary_data = []
@@ -178,8 +179,6 @@ if st.session_state.page == "clients":
             
             summary_data.append({
                 "Клиент": c_name,
-                "Тариф А (руб)": row['tariff_A'],
-                "Тариф B (руб)": row['tariff_B'],
                 "Всего паллет": pallets_count,
                 "Занято ячеек": cells_count
             })
@@ -188,46 +187,56 @@ if st.session_state.page == "clients":
         st.dataframe(sum_df, use_container_width=True)
         
         st.markdown("---")
-        st.subheader("🔍 Карточка клиента (Проваливание в детальную информацию)")
-        selected_client_card = st.selectbox("Выберите клиента для просмотра:", clients_df['name'].tolist())
-        
-        if selected_client_card:
-            col_c1, col_c2 = st.columns(2)
-            with col_c1:
-                st.markdown(f"**Компания:** {selected_client_card}")
-                c_tariffs = clients_df[clients_df['name'] == selected_client_card].iloc[0]
-                st.write(f"• Тариф Зона А: {c_tariffs['tariff_A']} руб./день")
-                st.write(f"• Тариф Зона B: {c_tariffs['tariff_B']} руб./день")
-            
-            with col_c2:
-                st.markdown(f"**Размещение на складе:**")
-            
-            client_pallets_df = pd.read_sql("""
-                SELECT p.lpn as 'LPN Паллеты', GROUP_CONCAT(pl.address) as 'Ячейки'
-                FROM pallets p
-                LEFT JOIN pallet_locations pl ON p.lpn = pl.lpn
-                WHERE p.client = ?
-                GROUP BY p.lpn
-            """, conn, params=(selected_client_card,))
-            
-            if not client_pallets_df.empty:
-                st.dataframe(client_pallets_df, use_container_width=True)
-                
-                st.markdown("**Позиционная номенклатура на паллетах клиента:**")
-                client_items_df = pd.read_sql("""
-                    SELECT pi.lpn as 'LPN', pi.sku as 'SKU / Артикул', pi.item_name as 'Наименование', pi.qty as 'Количество'
-                    FROM pallet_items pi
-                    JOIN pallets p ON pi.lpn = p.lpn
-                    WHERE p.client = ?
-                """, conn, params=(selected_client_card,))
-                if not client_items_df.empty:
-                    st.dataframe(client_items_df, use_container_width=True)
-                else:
-                    st.info("Номенклатура для паллет этого клиента не заполнена.")
-            else:
-                st.info("У данного клиента нет активных паллет на складе.")
+        st.markdown("### 📂 Открыть карточку клиента")
+        selected_client_card = st.selectbox("Выберите клиента для перехода в карточку:", clients_df['name'].tolist())
+        if st.button("Перейти в карточку клиента"):
+            st.session_state.selected_client = selected_client_card
+            st.session_state.page = "client_detail"
+            st.rerun()
     else:
         st.info("Список клиентов пуст.")
+
+elif st.session_state.page == "client_detail":
+    c_name = st.session_state.selected_client
+    if st.button("← Назад к списку клиентов"):
+        st.session_state.page = "clients"
+        st.session_state.selected_client = None
+        st.rerun()
+        
+    st.header(f"🏢 Карточка клиента: {c_name}")
+    
+    cursor = conn.cursor()
+    cursor.execute("SELECT tariff_A, tariff_B FROM clients WHERE name = ?", (c_name,))
+    t_data = cursor.fetchone()
+    if t_data:
+        st.write(f"• Индивидуальный тариф Зона А: {t_data[0]} руб./день")
+        st.write(f"• Индивидуальный тариф Зона B: {t_data[1]} руб./день")
+        
+    st.markdown("#### Активные паллеты и ячейки:")
+    client_pallets_df = pd.read_sql("""
+        SELECT p.lpn as 'LPN Паллеты', GROUP_CONCAT(pl.address) as 'Ячейки'
+        FROM pallets p
+        LEFT JOIN pallet_locations pl ON p.lpn = pl.lpn
+        WHERE p.client = ?
+        GROUP BY p.lpn
+    """, conn, params=(c_name,))
+    
+    if not client_pallets_df.empty:
+        st.dataframe(client_pallets_df, use_container_width=True)
+        
+        st.markdown("#### Детализированная номенклатура товаров:")
+        client_items_df = pd.read_sql("""
+            SELECT pi.lpn as 'LPN', pi.sku as 'SKU / Артикул', pi.item_name as 'Наименование', pi.qty as 'Количество'
+            FROM pallet_items pi
+            JOIN pallets p ON pi.lpn = p.lpn
+            WHERE p.client = ?
+        """, conn, params=(c_name,))
+        if not client_items_df.empty:
+            st.dataframe(client_items_df, use_container_width=True)
+        else:
+            st.info("Позиционная номенклатура не заполнена.")
+    else:
+        st.info("У данного клиента нет активных паллет на складе.")
 
 # --- РАЗДЕЛ 2: КАРТА СКЛАДА С ПОИСКОМ ПО КЛИЕНТАМ ---
 elif st.session_state.page == "map":
@@ -275,109 +284,94 @@ elif st.session_state.page == "map":
     st.metric("Найдено ячеек", len(loc_df))
     st.dataframe(loc_df.head(150), use_container_width=True)
 
-# --- РАЗДЕЛ 3: ПРИЕМКА И КАЛЕНДАРНЫЙ ВЫБОР ЯЧЕЕК ---
+# --- РАЗДЕЛ 3: ПРИЕМКА ПАРТИИ В СТИЛЕ 1С (ПАРТИОННЫЙ ВВОД С ТАБЛИЧНОЙ ЧАСТЬЮ) ---
 elif st.session_state.page == "inbound":
-    st.header("📥 Приемка паллеты и выбор ячейки в календарном виде")
-    st.write("Выберите свободные ячейки в визуальной матрице (как в календаре), внесите состав и закрепите за паллетой.")
+    st.header("📥 Документ приемки партии товаров (Стиль 1С)")
+    st.write("Сформируйте партию целиком, добавляя паллеты кнопкой, указывая для каждой адрес и попозиционную номенклатуру.")
     
     clients_list = pd.read_sql("SELECT name FROM clients", conn)["name"].tolist()
     
     if not clients_list:
         st.warning("Сначала добавьте хотя бы одного клиента в разделе «Клиенты и тарифы».")
     else:
-        with st.form("calendar_inbound_form"):
-            selected_client = st.selectbox("Поклажедатель", clients_list)
-            lpn_code = st.text_input("Номер/LPN паллеты", value=f"LPN-{random.randint(1000, 9999)}")
+        selected_client = st.selectbox("Поклажедатель", clients_list)
+        batch_number = st.text_input("Номер приходной накладной / партии", value=f"Партия-{random.randint(100, 999)}")
+        
+        if "batch_pallets" not in st.session_state:
+            st.session_state.batch_pallets = []
             
-            st.markdown("---")
-            st.markdown("### 📅 Календарный выбор ячеек склада")
+        st.markdown("---")
+        st.subheader("Табличная часть: Паллеты в партии")
+        
+        if st.button("➕ Добавить еще паллет в партию"):
+            st.session_state.batch_pallets.append({
+                "lpn": f"LPN-{random.randint(1000, 9999)}",
+                "cell": "",
+                "items": [{"sku": "SKU-001", "name": "Товар", "qty": 10}]
+            })
+            st.rerun()
             
-            sel_zone = st.radio("Зона размещения:", ["Зона А (Стеллажи)", "Зона B (2-й этаж)"], horizontal=True)
-            
-            selected_cells = []
-            cursor = conn.cursor()
-            
-            if sel_zone == "Зона А (Стеллажи)":
-                c_a, c_b = st.columns(2)
-                with c_a:
-                    chosen_aisle = st.selectbox("Линия:", ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'K', 'L', 'M'])
-                with c_b:
-                    chosen_sec = st.selectbox("Секция:", [1, 2, 3, 4, 5, 6])
+        cursor = conn.cursor()
+        
+        # Получаем список свободных ячеек
+        cursor.execute("SELECT address FROM locations WHERE status = 'FREE'")
+        free_cells = [row[0] for row in cursor.fetchall()]
+        
+        for idx, pal in enumerate(st.session_state.batch_pallets):
+            with st.container():
+                st.markdown(f"**Паллета #{idx+1}**")
+                col_p1, col_p2 = st.columns([1, 2])
+                with col_p1:
+                    pal["lpn"] = st.text_input(f"Номер LPN #{idx+1}", value=pal["lpn"], key=f"lpn_{idx}")
+                with col_p2:
+                    pal["cell"] = st.selectbox(f"Ячейка размещения #{idx+1}", free_cells if free_cells else ["Нет свободных"], key=f"cell_{idx}")
                 
-                st.markdown("**Сетка ярусов (выберите ячейку кликом):**")
-                # Выводим матрицу 5 ярусов (по 1 ячейке на ярус для этой секции)
-                for tier in range(5, 0, -1):
-                    addr = f"A-{chosen_aisle}-{chosen_sec:02d}-{tier}"
-                    cursor.execute("SELECT status FROM locations WHERE address = ?", (addr,))
-                    res = cursor.fetchone()
-                    status = res[0] if res else 'FREE'
+                st.write("Состав позиций на этой паллете:")
+                for item_idx, itm in enumerate(pal["items"]):
+                    ic1, ic2, ic3, ic4 = st.columns([2, 3, 1, 1])
+                    with ic1:
+                        itm["sku"] = st.text_input("Артикул", value=itm["sku"], key=f"sku_{idx}_{item_idx}")
+                    with ic2:
+                        itm["name"] = st.text_input("Наименование", value=itm["name"], key=f"name_{idx}_{item_idx}")
+                    with ic3:
+                        itm["qty"] = st.number_input("Кол-во", value=itm["qty"], min_value=1, key=f"qty_{idx}_{item_idx}")
+                    with ic4:
+                        if st.button("🗑️ Удали", key=f"del_item_{idx}_{item_idx}"):
+                            pal["items"].pop(item_idx)
+                            st.rerun()
+                            
+                if st.button("➕ Добавить позицию на паллету", key=f"add_item_{idx}"):
+                    pal["items"].append({"sku": "SKU-002", "name": "Еще товар", "qty": 5})
+                    st.rerun()
                     
-                    if status == 'FREE':
-                        if st.checkbox(f"Ярус {tier} — Адрес: {addr}", key=f"grid_cell_{addr}"):
-                            selected_cells.append(addr)
-                    else:
-                        st.markdown(f"<span style='color: #991b1b; background-color: #fee2e2; padding: 4px 8px; border-radius: 4px;'>Ярус {tier} ({addr}) — <b>Занята</b></span>", unsafe_allow_html=True)
+                if st.button(f"❌ Удалить паллету #{idx+1} из партии", key=f"del_pal_{idx}"):
+                    st.session_state.batch_pallets.pop(idx)
+                    st.rerun()
+                st.markdown("---")
+                
+        if st.button("💾 Провести приход всей партии"):
+            if not st.session_state.batch_pallets:
+                st.error("Добавьте хотя бы одну паллету в партию!")
             else:
-                st.markdown("**Матрица паллетомест 2-го этажа (150 мест):**")
-                cursor.execute("SELECT address, status FROM locations WHERE zone = 'B' ORDER BY address")
-                b_locs = cursor.fetchall()
-                
-                # Выводим сеткой по 10 штук в ряд (календарный вид)
-                for i in range(0, len(b_locs), 10):
-                    cols = st.columns(10)
-                    chunk = b_locs[i:i+10]
-                    for idx, (addr, status) in enumerate(chunk):
-                        with cols[idx]:
-                            short_n = addr.split('-')[1]
-                            if status == 'FREE':
-                                if st.checkbox(f"{short_n}", key=f"b_cell_{addr}"):
-                                    selected_cells.append(addr)
-                            else:
-                                st.markdown(f"<div style='background-color:#fee2e2; color:#991b1b; padding:4px; text-align:center; font-size:10px; border-radius:3px;'>{short_n}</div>", unsafe_allow_html=True)
-
-            st.markdown("---")
-            st.markdown("### 📦 Позиционная номенклатура на паллете (для будущей сборки)")
-            
-            col_i1, col_i2, col_i3 = st.columns(3)
-            with col_i1:
-                sku1 = st.text_input("SKU / Артикул 1", "SKU-001")
-                name1 = st.text_input("Наименование 1", "Товар А")
-                qty1 = st.number_input("Кол-во 1", min_value=0, value=10)
-            with col_i2:
-                sku2 = st.text_input("SKU / Артикул 2 (опц.)")
-                name2 = st.text_input("Наименование 2 (опц.)")
-                qty2 = st.number_input("Кол-во 2", min_value=0, value=0)
-            with col_i3:
-                sku3 = st.text_input("SKU / Артикул 3 (опц.)")
-                name3 = st.text_input("Наименование 3 (опц.)")
-                qty3 = st.number_input("Кол-во 3", min_value=0, value=0)
-                
-            submit_calendar = st.form_submit_button("Оприходовать и занять ячейку")
-            
-            if submit_calendar:
-                if not selected_cells:
-                    st.error("Выберите хотя бы одну свободную ячейку в матрице!")
-                else:
-                    try:
-                        cursor.execute("INSERT INTO pallets (lpn, client) VALUES (?, ?)", (lpn_code, selected_client))
+                try:
+                    for pal in st.session_state.batch_pallets:
+                        lpn = pal["lpn"]
+                        cell = pal["cell"]
                         
-                        for cell in selected_cells:
-                            cursor.execute("INSERT INTO pallet_locations (lpn, address) VALUES (?, ?)", (lpn_code, cell))
-                            cursor.execute("UPDATE locations SET status = 'OCCUPIED' WHERE address = ?", (cell,))
-                            
-                        items_to_add = [(lpn_code, sku1, name1, qty1)]
-                        if sku2 and qty2 > 0:
-                            items_to_add.append((lpn_code, sku2, name2, qty2))
-                        if sku3 and qty3 > 0:
-                            items_to_add.append((lpn_code, sku3, name3, qty3))
-                            
-                        cursor.executemany("INSERT INTO pallet_items (lpn, sku, item_name, qty) VALUES (?, ?, ?, ?)", items_to_add)
+                        cursor.execute("INSERT INTO pallets (lpn, client) VALUES (?, ?)", (lpn, selected_client))
+                        cursor.execute("INSERT INTO pallet_locations (lpn, address) VALUES (?, ?)", (lpn, cell))
+                        cursor.execute("UPDATE locations SET status = 'OCCUPIED' WHERE address = ?", (cell,))
                         
-                        conn.commit()
-                        st.success(f"Паллета {lpn_code} успешно закреплена за ячейками: {', '.join(selected_cells)}!")
-                        st.rerun()
-                    except sqlite3.IntegrityError:
-                        st.error("Паллета с таким LPN уже зарегистрирована на складе!")
+                        for itm in pal["items"]:
+                            cursor.execute("INSERT INTO pallet_items (lpn, sku, item_name, qty) VALUES (?, ?, ?, ?)", 
+                                           (lpn, itm["sku"], itm["name"], itm["qty"]))
+                            
+                    conn.commit()
+                    st.success(f"Партия '{batch_number}' успешно проведена! Оприходовано паллет: {len(st.session_state.batch_pallets)}.")
+                    st.session_state.batch_pallets = []
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Ошибка при проведении: {e}")
 
     st.subheader("Текущие паллеты на складе")
     pallets_df = pd.read_sql("""
@@ -386,7 +380,6 @@ elif st.session_state.page == "inbound":
         LEFT JOIN pallet_locations pl ON p.lpn = pl.lpn 
         GROUP BY p.lpn
     """, conn)
-    
     if not pallets_df.empty:
         st.dataframe(pallets_df, use_container_width=True)
     else:

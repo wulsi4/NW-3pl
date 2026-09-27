@@ -47,7 +47,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ SQLite ---
+# --- ИНИЦИАЛИЗАЦИЯ И МИГРАЦИЯ БАЗЫ ДАННЫХ SQLite ---
 def get_connection():
     conn = sqlite3.connect("warehouse.db", check_same_thread=False)
     return conn
@@ -71,17 +71,19 @@ def init_db():
     
     cursor.execute('''CREATE TABLE IF NOT EXISTS pallets (
         lpn TEXT PRIMARY KEY,
-        client TEXT,
-        batch_name TEXT,
-        arrival_date TEXT,
-        status TEXT
+        client TEXT
     )''')
+    
+    # Безохпасное добавление новых колонок для существующих баз данных
+    for col, col_type in [("batch_name", "TEXT"), ("arrival_date", "TEXT"), ("status", "TEXT")]:
+        try:
+            cursor.execute(f"ALTER TABLE pallets ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass # Колонка уже существует
     
     cursor.execute('''CREATE TABLE IF NOT EXISTS pallet_locations (
         lpn TEXT,
         address TEXT,
-        FOREIGN KEY(lpn) REFERENCES pallets(lpn),
-        FOREIGN KEY(address) REFERENCES locations(address),
         PRIMARY KEY(lpn, address)
     )''')
     
@@ -90,8 +92,7 @@ def init_db():
         lpn TEXT,
         sku TEXT,
         item_name TEXT,
-        qty INTEGER,
-        FOREIGN KEY(lpn) REFERENCES pallets(lpn)
+        qty INTEGER
     )''')
     
     conn.commit()
@@ -100,14 +101,12 @@ def init_db():
     if cursor.fetchone()[0] == 0:
         locs = []
         zones_a_letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'K', 'L', 'M']
-        # Формат адресов Зоны А: Линия-Секция-Ярус-Место (например, A-1-1-1)
         for aisle in zones_a_letters:
             for sec in range(1, 7):
                 for tier in range(1, 6):
                     for pos in range(1, 4):
                         addr = f"{aisle}-{sec}-{tier}-{pos}"
                         locs.append((addr, "A", "FREE"))
-        # Зона B: 150 паллетомест
         for i in range(1, 151):
             addr = f"B-{i:03d}"
             locs.append((addr, "B", "FREE"))
@@ -129,7 +128,7 @@ if "page" not in st.session_state:
 if "selected_client" not in st.session_state:
     st.session_state.selected_client = None
 
-# --- ШАПКА ПРИЛОЖЕНИЯ С МИНИ-ЛОГОТИПОМ В БЕЛО-СИНЕ-КРАСНЫХ ТОНАХ ---
+# --- ШАПКА ПРИЛОЖЕНИЯ С МИНИ-ЛОГОТИПОМ ---
 logo_base64 = get_base64_image("logo.png")
 logo_html = f"<img src='data:image/png;base64,{logo_base64}' style='width: 45px; height: 45px; border-radius: 50%; object-fit: cover; vertical-align: middle; margin-right: 15px; border: 2px solid white;'/>" if logo_base64 else "🛞 "
 
@@ -308,10 +307,10 @@ elif st.session_state.page == "map":
     st.metric("Найдено ячеек", len(loc_df))
     st.dataframe(loc_df.head(150), use_container_width=True)
 
-# --- РАЗДЕЛ 3: ПРИХОД (С ПРЕДУПРЕЖДЕНИЕМ ПРИ ЗАНЯТОЙ ЯЧЕЙКЕ) ---
+# --- РАЗДЕЛ 3: ПРИХОД ---
 elif st.session_state.page == "inbound":
     st.header("📥 Документ прихода партии товаров")
-    st.write("Сформируйте партию целиком. Если ячейка уже занята, система выдаст предупреждение, но позволит разместить паллету.")
+    st.write("Сформируйте партию целиком. Если ячейка занята, появится предупреждение.")
     
     clients_list = pd.read_sql("SELECT name FROM clients", conn)["name"].tolist()
     
@@ -397,7 +396,7 @@ elif st.session_state.page == "inbound":
                             occupied_warnings.append(pal["cell"])
                     
                     if occupied_warnings:
-                        st.warning(f"⚠️ Предупреждение: Вы выбрали уже занятые ячейки: {', '.join(set(occupied_warnings))}. Размещение разрешено (несколько паллет в одной ячейке).")
+                        st.warning(f"⚠️ Предупреждение: Вы выбрали уже занятые ячейки: {', '.join(set(occupied_warnings))}. Размещение разрешено.")
                     
                     for pal in st.session_state.wizard_pallets:
                         lpn = pal["lpn"]
@@ -434,10 +433,10 @@ elif st.session_state.page == "inbound":
     else:
         st.info("Палет на складе пока нет.")
 
-# --- РАЗДЕЛ 4: СПИСАНИЕ И РЕДАКЦИЯ ПАЛЛЕТ (С ПРОВЕРКОЙ МУЛЬТИ-ПАЛЛЕТ В ЯЧЕЙКАХ) ---
+# --- РАЗДЕЛ 4: СПИСАНИЕ И РЕДАКЦИЯ ПАЛЛЕТ ---
 elif st.session_state.page == "management":
     st.header("🔄 Списание товара и редакция ячеек")
-    st.write("Управляйте хранящимися паллетами: редактируйте состав или списывайте товар. Ячейка освободится только тогда, когда из нее уйдут все паллеты.")
+    st.write("Управляйте хранящимися паллетами: редактируйте состав или списывайте товар.")
     
     pallets_list = pd.read_sql("SELECT lpn FROM pallets", conn)["lpn"].tolist()
     
@@ -464,11 +463,9 @@ elif st.session_state.page == "management":
         
         with col_m1:
             st.markdown("### 🗑️ Списание паллеты")
-            st.warning("При списании паллет проверяется наличие других паллет в этих же ячейках.")
             if st.button("🔴 Списать паллету полностью"):
                 try:
                     for cell in p_cells:
-                        # Проверяем, остались ли еще другие паллеты в этой ячейке
                         cursor.execute("SELECT COUNT(*) FROM pallet_locations WHERE address = ? AND lpn != ?", (cell, selected_lpn))
                         other_pallets_count = cursor.fetchone()[0]
                         if other_pallets_count == 0:
@@ -548,7 +545,7 @@ elif st.session_state.page == "reports":
 # --- РАЗДЕЛ 6: БИЛЛИНГ И СНАПШОТ ---
 elif st.session_state.page == "billing":
     st.header("📊 Автоматический расчет хранения (Снапшот остатков)")
-    st.write("Расчет строится на основе фактически занятых ячеек (паллето-мест) с учетом индивидуальных тарифов.")
+    st.write("Расчет строится на основе фактически занятых ячеек с учетом тарифов.")
     
     if st.button("Сделать срез (Snapshot) и рассчитать счета"):
         billing_query = """

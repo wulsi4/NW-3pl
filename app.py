@@ -4,7 +4,45 @@ import sqlite3
 import io
 import random
 
-st.set_page_config(page_title="3PL Warehouse Management System", layout="wide")
+st.set_page_config(page_title="3PL Nord Wheel", layout="wide")
+
+# --- КАСТОМНЫЙ CSS ДЛЯ БЕЛО-СИНЕЙ СТИЛИСТИКИ И КРУГЛЫХ КНОПОК ---
+st.markdown("""
+    <style>
+    /* Общий фон приложения */
+    .stApp {
+        background-color: #f8fafc;
+    }
+    
+    /* Стилизация боковой панели (левая сторона) */
+    [data-testid="stSidebar"] {
+        background-color: #ffffff;
+        border-right: 1px solid #e2e8f0;
+    }
+    
+    /* Красивые скругленные кнопки */
+    div.stButton > button, div.stFormSubmitButton > button, .stDownloadButton > button {
+        border-radius: 30px !important;
+        background-color: #0284c7 !important; /* Яркий синий цвет */
+        color: white !important;
+        font-weight: 600;
+        border: none;
+        padding: 0.5rem 1.2rem;
+        box-shadow: 0 4px 6px -1px rgba(0, 132, 199, 0.2);
+        transition: all 0.3s ease;
+    }
+    
+    div.stButton > button:hover, div.stFormSubmitButton > button:hover, .stDownloadButton > button:hover {
+        background-color: #0369a1 !important;
+        box-shadow: 0 6px 8px -1px rgba(3, 105, 161, 0.3);
+    }
+    
+    /* Заголовки */
+    h1, h2, h3 {
+        color: #0f172a !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 # --- ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ SQLite ---
 def get_connection():
@@ -15,7 +53,6 @@ def init_db():
     conn = get_connection()
     cursor = conn.cursor()
     
-    # Таблица клиентов
     cursor.execute('''CREATE TABLE IF NOT EXISTS clients (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT UNIQUE,
@@ -23,21 +60,18 @@ def init_db():
         tariff_B REAL
     )''')
     
-    # Таблица ячеек склада
     cursor.execute('''CREATE TABLE IF NOT EXISTS locations (
         address TEXT PRIMARY KEY,
         zone TEXT,
         status TEXT DEFAULT 'FREE'
     )''')
     
-    # Таблица паллет
     cursor.execute('''CREATE TABLE IF NOT EXISTS pallets (
         lpn TEXT PRIMARY KEY,
         client TEXT,
         nomenclature TEXT
     )''')
     
-    # Таблица связи паллет и ячеек (поддержка мульти-ячеек / негабарита)
     cursor.execute('''CREATE TABLE IF NOT EXISTS pallet_locations (
         lpn TEXT,
         address TEXT,
@@ -48,7 +82,6 @@ def init_db():
     
     conn.commit()
     
-    # Автозаполнение ячеек, если таблица пуста
     cursor.execute("SELECT COUNT(*) FROM locations")
     if cursor.fetchone()[0] == 0:
         locs = []
@@ -68,7 +101,6 @@ def init_db():
 
 init_db()
 
-# Функция для конвертации DataFrame в Excel для скачивания
 def convert_df_to_excel(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -76,22 +108,36 @@ def convert_df_to_excel(df):
     processed_data = output.getvalue()
     return processed_data
 
-# --- ИНТЕРФЕЙС ПРИЛОЖЕНИЯ ---
-st.title("📦 3PL Склад: Управление хранением и биллинг")
+# --- ШАПКА ПРИЛОЖЕНИЯ ---
+st.markdown("<h1 style='text-align: center; color: #0284c7;'>🛞 3PL Nord Wheel</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: #64748b; margin-top: -15px;'>Система ответственного хранения грузов и биллинга</p>", unsafe_allow_html=True)
+st.markdown("---")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "1. Клиенты и тарифы", 
-    "2. Карта склада и ячейки", 
-    "3. Приемка и размещение", 
-    "4. Печать листов А4 и Отчеты",
-    "5. Биллинг (Снапшот)"
-])
+# --- ЛЕВАЯ ПАНЕЛЬ (МЕНЮ И ЛОГОТИП) ---
+try:
+    st.sidebar.image("logo.png", use_container_width=True)
+except:
+    st.sidebar.markdown("<h2 style='text-align: center; color: #0284c7;'>🛞 Nord Wheel</h2>", unsafe_allow_html=True)
+
+st.sidebar.markdown("<p style='text-align: center; font-size: 12px; color: #64748b;'>Логистический комплекс</p>", unsafe_allow_html=True)
+st.sidebar.markdown("---")
+
+menu = st.sidebar.radio(
+    "Меню управления:",
+    [
+        "1. Клиенты и тарифы", 
+        "2. Карта склада и ячейки", 
+        "3. Приемка и размещение", 
+        "4. Печать листов А4 и Отчеты",
+        "5. Биллинг (Снапшот)"
+    ]
+)
 
 conn = get_connection()
 
-# --- ТАБ 1: КЛИЕНТЫ И ТАРИФЫ ---
-with tab1:
-    st.header("Регистрация поклажедателей")
+# --- РАЗДЕЛ 1: КЛИЕНТЫ И ТАРИФЫ ---
+if menu == "1. Клиенты и тарифы":
+    st.header("👥 Регистрация поклажедателей")
     with st.form("add_client_form"):
         c_name = st.text_input("Название компании")
         t_a = st.number_input("Тариф Зона А (руб/паллето-день)", value=30.0)
@@ -111,9 +157,9 @@ with tab1:
     clients_df = pd.read_sql("SELECT * FROM clients", conn)
     st.dataframe(clients_df, use_container_width=True)
 
-# --- ТАБ 2: КАРТА СКЛАДА ---
-with tab2:
-    st.header("Интерактивная карта и статус ячеек")
+# --- РАЗДЕЛ 2: КАРТА СКЛАДА ---
+elif menu == "2. Карта склада и ячейки":
+    st.header("🗺️ Интерактивная карта и статус ячеек")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -140,37 +186,92 @@ with tab2:
     st.metric("Найдено ячеек по фильтру", len(loc_df))
     st.dataframe(loc_df.head(100), use_container_width=True)
 
-# --- ТАБ 3: ПРИЕМКА И РАЗМЕЩЕНИЕ ---
-with tab3:
-    st.header("Регистрация прихода и размещение паллет")
+# --- РАЗДЕЛ 3: ПРИЕМКА И РАЗМЕЩЕНИЕ (СЕТЕВОЙ / КАЛЕНДАРНЫЙ ВЫБОР) ---
+elif menu == "3. Приемка и размещение":
+    st.header("📥 Регистрация прихода и размещение паллет")
     
     clients_list = pd.read_sql("SELECT name FROM clients", conn)["name"].tolist()
     
     if not clients_list:
-        st.warning("Сначала добавьте хотя бы одного клиента в Табе 1.")
+        st.warning("Сначала добавьте хотя бы одного клиента в разделе «Клиенты и тарифы».")
     else:
         with st.form("inbound_form"):
             selected_client = st.selectbox("Поклажедатель", clients_list)
             pallet_num = st.text_input("Номер/Идентификатор паллеты (LPN)", value=f"LPN-{random.randint(1000, 9999)}")
             nomenclature = st.text_area("Состав номенклатуры", "Артикул, наименование, количество коробок")
             
-            # Доступные свободные ячейки
-            free_locs = pd.read_sql("SELECT address FROM locations WHERE status = 'FREE'", conn)["address"].tolist()
-            assigned_locs = st.multiselect("Выберите ячейки для размещения (можно выбрать несколько для негабарита)", free_locs)
+            st.markdown("---")
+            st.markdown("### 📍 Интуитивный выбор ячеек (Календарная матрица)")
             
-            submit_inbound = st.form_submit_button("Оприходовать и разместить")
+            sel_zone = st.radio("Выберите зону для размещения:", ["Зона А (Стеллажи)", "Зона B (2-й этаж)"], horizontal=True)
+            
+            assigned_locs = []
+            
+            cursor = conn.cursor()
+            if sel_zone == "Зона А (Стеллажи)":
+                col_a1, col_a2 = st.columns(2)
+                with col_a1:
+                    chosen_aisle = st.selectbox("Линия (Ряд):", ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'K', 'L', 'M'])
+                with col_a2:
+                    chosen_sec = st.selectbox("Секция:", [1, 2, 3, 4, 5, 6])
+                
+                st.info("Выберите ячейки в матрице ярусов и глубины:")
+                
+                grid_data = {}
+                for tier in range(1, 6):
+                    for pos in range(1, 4):
+                        addr = f"A-{chosen_aisle}-{chosen_sec:02d}-{tier}-{pos}"
+                        cursor.execute("SELECT status FROM locations WHERE address = ?", (addr,))
+                        res = cursor.fetchone()
+                        status = res[0] if res else 'FREE'
+                        grid_data[(tier, pos)] = {"address": addr, "status": status}
+                
+                chosen_in_grid = []
+                for tier in range(5, 0, -1): # Сверху вниз (от 5 до 1 яруса)
+                    st.markdown(f"**Ярус {tier} (Высота):**")
+                    cols = st.columns(3)
+                    for pos in range(1, 4):
+                        cell = grid_data[(tier, pos)]
+                        addr = cell["address"]
+                        is_free = (cell["status"] == "FREE")
+                        
+                        with cols[pos-1]:
+                            if is_free:
+                                if st.checkbox(f"Глубина {pos}\n({addr})", key=f"grid_{addr}"):
+                                    chosen_in_grid.append(addr)
+                            else:
+                                st.markdown(f"<div style='padding: 8px; background-color: #fee2e2; color: #991b1b; border-radius: 8px; text-align: center; font-size: 11px; border: 1px solid #fecaca;'><b>{addr}</b><br>Занята</div>", unsafe_allow_html=True)
+                assigned_locs = chosen_in_grid
+
+            else: # Зона B
+                st.info("Матрица паллетомест 2-го этажа (зеленые — свободны, красные — заняты):")
+                cursor.execute("SELECT address, status FROM locations WHERE zone = 'B' ORDER BY address")
+                b_locs = cursor.fetchall()
+                
+                chosen_in_b = []
+                for i in range(0, len(b_locs), 10):
+                    cols = st.columns(10)
+                    chunk = b_locs[i:i+10]
+                    for idx, (addr, status) in enumerate(chunk):
+                        with cols[idx]:
+                            short_num = addr.split('-')[1]
+                            if status == "FREE":
+                                if st.checkbox(f"{short_num}", key=f"grid_b_{addr}"):
+                                    chosen_in_b.append(addr)
+                            else:
+                                st.markdown(f"<div style='background-color: #fee2e2; color: #991b1b; padding: 6px; border-radius: 4px; text-align: center; font-size: 10px; margin-bottom: 5px;'>{short_num}</div>", unsafe_allow_html=True)
+                assigned_locs = chosen_in_b
+
+            submit_inbound = st.form_submit_button("Оприходовать и разместить паллету")
             
             if submit_inbound:
                 if not assigned_locs:
-                    st.error("Выберите хотя бы одну ячейку!")
+                    st.error("Выберите хотя бы одну свободную ячейку в матрице!")
                 else:
                     try:
-                        cursor = conn.cursor()
-                        # Сохраняем паллету
                         cursor.execute("INSERT INTO pallets (lpn, client, nomenclature) VALUES (?, ?, ?)", 
                                        (pallet_num, selected_client, nomenclature))
                         
-                        # Привязываем ячейки
                         for loc in assigned_locs:
                             cursor.execute("INSERT INTO pallet_locations (lpn, address) VALUES (?, ?)", (pallet_num, loc))
                             cursor.execute("UPDATE locations SET status = 'OCCUPIED' WHERE address = ?", (loc,))
@@ -201,9 +302,9 @@ with tab3:
     else:
         st.info("Палет на складе пока нет.")
 
-# --- ТАБ 4: ПЕЧАТЬ ЛИСТОВ А4 И ОТЧЕТЫ ---
-with tab4:
-    st.header("Генерация паллетных листов А4 и выгрузка данных")
+# --- РАЗДЕЛ 4: ПЕЧАТЬ ЛИСТОВ А4 И ОТЧЕТЫ ---
+elif menu == "4. Печать листов А4 и Отчеты":
+    st.header("🖨️ Генерация паллетных листов А4 и выгрузка данных")
     
     pallets_list = pd.read_sql("SELECT lpn FROM pallets", conn)["lpn"].tolist()
     if not pallets_list:
@@ -219,7 +320,7 @@ with tab4:
         
         if p_data:
             st.markdown("---")
-            st.markdown(f"<h2 style='text-align: center;'>📄 ПАЛЛЕТНЫЙ ЛИСТ (A4)</h2>", unsafe_allow_html=True)
+            st.markdown(f"<h2 style='text-align: center; color: #0284c7;'>📄 ПАЛЛЕТНЫЙ ЛИСТ (A4) — 3PL Nord Wheel</h2>", unsafe_allow_html=True)
             st.markdown(f"### **Клиент:** {p_data[0]}")
             st.markdown(f"<h1>ID ПАЛЛЕТЫ: {p_lpn}</h1>", unsafe_allow_html=True)
             st.markdown(f"**Ячейки размещения:** {', '.join(locs_data)}")
@@ -242,13 +343,13 @@ with tab4:
         st.download_button(
             label="📥 Скачать отчет по паллетам в Excel",
             data=excel_data,
-            file_name="warehouse_pallets_report.xlsx",
+            file_name="NordWheel_pallets_report.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-# --- ТАБ 5: БИЛЛИНГ И СНАПШОТ ---
-with tab5:
-    st.header("Автоматический расчет хранения (Снапшот остатков)")
+# --- РАЗДЕЛ 5: БИЛЛИНГ И СНАПШОТ ---
+elif menu == "5. Биллинг (Снапшот)":
+    st.header("📊 Автоматический расчет хранения (Снапшот остатков)")
     st.write("Расчет строится на основе фактически занятых ячеек (паллето-мест) с учетом негабарита и индивидуальных тарифов.")
     
     if st.button("Сделать срез (Snapshot) и рассчитать счета"):
@@ -291,12 +392,11 @@ with tab5:
             res_df = pd.DataFrame(billing_results)
             st.dataframe(res_df, use_container_width=True)
             
-            # Кнопка скачивания биллинга в Excel
             billing_excel = convert_df_to_excel(res_df)
             st.download_button(
                 label="📥 Скачать счет/акт биллинга в Excel",
                 data=billing_excel,
-                file_name="warehouse_billing_report.xlsx",
+                file_name="NordWheel_billing_report.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         else:

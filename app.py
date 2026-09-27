@@ -3,10 +3,19 @@ import pandas as pd
 import sqlite3
 import io
 import random
+import base64
 
 st.set_page_config(page_title="3PL Nord Wheel", layout="wide")
 
-# --- КАСТОМНЫЙ CSS ДЛЯ БЕЛО-СИНЕ-КРАСНОЙ СТИЛИСТИКИ И КРУГЛЫХ КНОПОК ---
+# --- ФУНКЦИЯ ДЛЯ КОДИРОВАНИЯ ЛОГОТИПА В BASE64 ---
+def get_base64_image(image_path):
+    try:
+        with open(image_path, "rb") as img_file:
+            return base64.b64encode(img_file.read()).decode()
+    except:
+        return ""
+
+# --- КАСТОМНЫЙ CSS ДЛЯ СТИЛИСТИКИ И КНОПОК ---
 st.markdown("""
     <style>
     .stApp {
@@ -87,11 +96,14 @@ def init_db():
     if cursor.fetchone()[0] == 0:
         locs = []
         zones_a_letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'K', 'L', 'M']
+        # Формат адресов Зоны А: Линия-Секция-Ярус-Место (например, A-1-1-1)
         for aisle in zones_a_letters:
             for sec in range(1, 7):
                 for tier in range(1, 6):
-                    addr = f"A-{aisle}-{sec:02d}-{tier}"
-                    locs.append((addr, "A", "FREE"))
+                    for pos in range(1, 4):
+                        addr = f"{aisle}-{sec}-{tier}-{pos}"
+                        locs.append((addr, "A", "FREE"))
+        # Зона B: 150 паллетомест
         for i in range(1, 151):
             addr = f"B-{i:03d}"
             locs.append((addr, "B", "FREE"))
@@ -113,15 +125,21 @@ if "page" not in st.session_state:
 if "selected_client" not in st.session_state:
     st.session_state.selected_client = None
 
-# --- ШАПКА ПРИЛОЖЕНИЯ В БЕЛО-СИНЕ-КРАСНЫХ ТОНАХ ---
-st.markdown("""
-    <div style='background: linear-gradient(135deg, #1d4ed8 0%, #0284c7 50%, #dc2626 100%); padding: 25px; border-radius: 16px; text-align: center; color: white; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); margin-bottom: 25px;'>
-        <h1 style='color: white; margin: 0; font-size: 34px; font-weight: 800; text-shadow: 0 2px 4px rgba(0,0,0,0.2);'>🛞 3PL Nord Wheel</h1>
-        <p style='margin: 8px 0 0 0; font-size: 15px; color: #f1f5f9; font-weight: 500;'>Профессиональная система ответственного хранения грузов и биллинга</p>
+# --- ШАПКА ПРИЛОЖЕНИЯ С МИНИ-ЛОГОТИПОМ В БЕЛО-СИНЕ-КРАСНЫХ ТОНАХ ---
+logo_base64 = get_base64_image("logo.png")
+logo_html = f"<img src='data:image/png;base64,{logo_base64}' style='width: 45px; height: 45px; border-radius: 50%; object-fit: cover; vertical-align: middle; margin-right: 15px; border: 2px solid white;'/>" if logo_base64 else "🛞 "
+
+st.markdown(f"""
+    <div style='background: linear-gradient(135deg, #1d4ed8 0%, #0284c7 50%, #dc2626 100%); padding: 22px 25px; border-radius: 16px; display: flex; align-items: center; justify-content: center; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); margin-bottom: 25px;'>
+        {logo_html}
+        <div style='text-align: left;'>
+            <h1 style='color: white; margin: 0; font-size: 30px; font-weight: 800; text-shadow: 0 2px 4px rgba(0,0,0,0.2);'>3PL Nord Wheel</h1>
+            <p style='margin: 4px 0 0 0; font-size: 14px; color: #f1f5f9; font-weight: 500;'>Профессиональная система ответственного хранения грузов и биллинга</p>
+        </div>
     </div>
 """, unsafe_allow_html=True)
 
-# --- ЛЕВАЯ ПАНЕЛЬ С ЛОГОТИПОМ И КНОПКАМИ ---
+# --- ЛЕВАЯ ПАНЕЛЬ С КНОПКАМИ И ЛОГОТИПОМ ---
 with st.sidebar:
     try:
         st.image("logo.png", use_container_width=True)
@@ -137,8 +155,10 @@ with st.sidebar:
         st.session_state.selected_client = None
     if st.button("🗺️ Карта склада и ячейки", use_container_width=True):
         st.session_state.page = "map"
-    if st.button("📥 Приемка партии (1С стиль)", use_container_width=True):
+    if st.button("📥 Приход", use_container_width=True):
         st.session_state.page = "inbound"
+    if st.button("🔄 Списание и редакция", use_container_width=True):
+        st.session_state.page = "management"
     if st.button("🖨️ Печать листов А4 и Отчеты", use_container_width=True):
         st.session_state.page = "reports"
     if st.button("📊 Биллинг (Снапшот)", use_container_width=True):
@@ -146,7 +166,7 @@ with st.sidebar:
 
 conn = get_connection()
 
-# --- РАЗДЕЛ 1: КЛИЕНТЫ И ТАРИФЫ (И СТРАНИЦА КАРТОЧКИ КЛИЕНТА) ---
+# --- РАЗДЕЛ 1: КЛИЕНТЫ И ТАРИФЫ ---
 if st.session_state.page == "clients":
     st.header("👥 Регистрация и список поклажедателей")
     
@@ -189,7 +209,7 @@ if st.session_state.page == "clients":
         st.markdown("---")
         st.markdown("### 📂 Открыть карточку клиента")
         selected_client_card = st.selectbox("Выберите клиента для перехода в карточку:", clients_df['name'].tolist())
-        if st.button("Перейти в карточку клиента"):
+        if st.button("Открыть карточку клиента"):
             st.session_state.selected_client = selected_client_card
             st.session_state.page = "client_detail"
             st.rerun()
@@ -209,8 +229,8 @@ elif st.session_state.page == "client_detail":
     cursor.execute("SELECT tariff_A, tariff_B FROM clients WHERE name = ?", (c_name,))
     t_data = cursor.fetchone()
     if t_data:
-        st.write(f"• Индивидуальный тариф Зона А: {t_data[0]} руб./день")
-        st.write(f"• Индивидуальный тариф Зона B: {t_data[1]} руб./день")
+        st.write(f"• Тариф Зона А: {t_data[0]} руб./день")
+        st.write(f"• Тариф Зона B: {t_data[1]} руб./день")
         
     st.markdown("#### Активные паллеты и ячейки:")
     client_pallets_df = pd.read_sql("""
@@ -277,17 +297,17 @@ elif st.session_state.page == "map":
             query += " AND status = 'OCCUPIED'"
         
     loc_df = pd.read_sql(query, conn)
-    search_query = st.text_input("Поиск по конкретному адресу ячейки (например, A-A-01-1 или B-042)")
+    search_query = st.text_input("Поиск по конкретному адресу ячейки (например, A-1-1-1 или B-042)")
     if search_query:
         loc_df = loc_df[loc_df["address"].str.contains(search_query, case=False)]
 
     st.metric("Найдено ячеек", len(loc_df))
     st.dataframe(loc_df.head(150), use_container_width=True)
 
-# --- РАЗДЕЛ 3: ПРИЕМКА ПАРТИИ В СТИЛЕ 1С (ПАРТИОННЫЙ ВВОД С ТАБЛИЧНОЙ ЧАСТЬЮ) ---
+# --- РАЗДЕЛ 3: ПРИХОД ПАРТИИ (1С СТИЛЬ С КРАСНОЙ ИНДИКАЦИЕЙ) ---
 elif st.session_state.page == "inbound":
-    st.header("📥 Документ приемки партии товаров (Стиль 1С)")
-    st.write("Сформируйте партию целиком, добавляя паллеты кнопкой, указывая для каждой адрес и попозиционную номенклатуру.")
+    st.header("📥 Документ прихода партии товаров")
+    st.write("Сформируйте партию целиком. Занятые ячейки подсвечены красным цветом.")
     
     clients_list = pd.read_sql("SELECT name FROM clients", conn)["name"].tolist()
     
@@ -313,9 +333,9 @@ elif st.session_state.page == "inbound":
             
         cursor = conn.cursor()
         
-        # Получаем список свободных ячеек
-        cursor.execute("SELECT address FROM locations WHERE status = 'FREE'")
-        free_cells = [row[0] for row in cursor.fetchall()]
+        cursor.execute("SELECT address, status FROM locations")
+        all_cells_status = {row[0]: row[1] for row in cursor.fetchall()}
+        all_cells_list = list(all_cells_status.keys())
         
         for idx, pal in enumerate(st.session_state.batch_pallets):
             with st.container():
@@ -324,7 +344,16 @@ elif st.session_state.page == "inbound":
                 with col_p1:
                     pal["lpn"] = st.text_input(f"Номер LPN #{idx+1}", value=pal["lpn"], key=f"lpn_{idx}")
                 with col_p2:
-                    pal["cell"] = st.selectbox(f"Ячейка размещения #{idx+1}", free_cells if free_cells else ["Нет свободных"], key=f"cell_{idx}")
+                    cell_options = []
+                    for c in all_cells_list:
+                        st_val = all_cells_status.get(c, 'FREE')
+                        if st_val == 'OCCUPIED':
+                            cell_options.append(f"🔴 [ЗАНЯТА] {c}")
+                        else:
+                            cell_options.append(f"🟢 [СВОБОДНА] {c}")
+                    
+                    selected_cell_display = st.selectbox(f"Ячейка размещения #{idx+1} (Формат А-1-1-1)", cell_options, key=f"cell_{idx}")
+                    pal["cell"] = selected_cell_display.split("] ")[1] if "] " in selected_cell_display else selected_cell_display
                 
                 st.write("Состав позиций на этой паллете:")
                 for item_idx, itm in enumerate(pal["items"]):
@@ -354,22 +383,31 @@ elif st.session_state.page == "inbound":
                 st.error("Добавьте хотя бы одну паллету в партию!")
             else:
                 try:
+                    has_error = False
                     for pal in st.session_state.batch_pallets:
-                        lpn = pal["lpn"]
-                        cell = pal["cell"]
-                        
-                        cursor.execute("INSERT INTO pallets (lpn, client) VALUES (?, ?)", (lpn, selected_client))
-                        cursor.execute("INSERT INTO pallet_locations (lpn, address) VALUES (?, ?)", (lpn, cell))
-                        cursor.execute("UPDATE locations SET status = 'OCCUPIED' WHERE address = ?", (cell,))
-                        
-                        for itm in pal["items"]:
-                            cursor.execute("INSERT INTO pallet_items (lpn, sku, item_name, qty) VALUES (?, ?, ?, ?)", 
-                                           (lpn, itm["sku"], itm["name"], itm["qty"]))
+                        c_stat = all_cells_status.get(pal["cell"], 'FREE')
+                        if c_stat == 'OCCUPIED':
+                            st.error(f"Ячейка {pal['cell']} уже занята! Выберите свободную ячейку.")
+                            has_error = True
+                            break
+                    
+                    if not has_error:
+                        for pal in st.session_state.batch_pallets:
+                            lpn = pal["lpn"]
+                            cell = pal["cell"]
                             
-                    conn.commit()
-                    st.success(f"Партия '{batch_number}' успешно проведена! Оприходовано паллет: {len(st.session_state.batch_pallets)}.")
-                    st.session_state.batch_pallets = []
-                    st.rerun()
+                            cursor.execute("INSERT INTO pallets (lpn, client) VALUES (?, ?)", (lpn, selected_client))
+                            cursor.execute("INSERT INTO pallet_locations (lpn, address) VALUES (?, ?)", (lpn, cell))
+                            cursor.execute("UPDATE locations SET status = 'OCCUPIED' WHERE address = ?", (cell,))
+                            
+                            for itm in pal["items"]:
+                                cursor.execute("INSERT INTO pallet_items (lpn, sku, item_name, qty) VALUES (?, ?, ?, ?)", 
+                                               (lpn, itm["sku"], itm["name"], itm["qty"]))
+                                
+                        conn.commit()
+                        st.success(f"Партия '{batch_number}' успешно проведена! Оприходовано паллет: {len(st.session_state.batch_pallets)}.")
+                        st.session_state.batch_pallets = []
+                        st.rerun()
                 except Exception as e:
                     st.error(f"Ошибка при проведении: {e}")
 
@@ -385,7 +423,66 @@ elif st.session_state.page == "inbound":
     else:
         st.info("Палет на складе пока нет.")
 
-# --- РАЗДЕЛ 4: ПЕЧАТЬ ЛИСТОВ А4 И ОТЧЕТЫ ---
+# --- РАЗДЕЛ 4: СПИСАНИЕ И РЕДАКЦИЯ ПАЛЛЕТ ---
+elif st.session_state.page == "management":
+    st.header("🔄 Списание товара и редакция ячеек")
+    st.write("Управляйте хранящимися паллетами: редактируйте состав или списывайте товар, полностью освобождая ячейки склада.")
+    
+    pallets_list = pd.read_sql("SELECT lpn FROM pallets", conn)["lpn"].tolist()
+    
+    if not pallets_list:
+        st.info("На складе нет активных паллет для управления.")
+    else:
+        selected_lpn = st.selectbox("Выберите паллету (LPN) для управления:", pallets_list)
+        
+        cursor = conn.cursor()
+        cursor.execute("SELECT client FROM pallets WHERE lpn = ?", (selected_lpn,))
+        p_info = cursor.fetchone()
+        cursor.execute("SELECT address FROM pallet_locations WHERE lpn = ?", (selected_lpn,))
+        p_cells = [row[0] for row in cursor.fetchall()]
+        
+        st.markdown(f"**Клиент:** {p_info[0] if p_info else 'Не найден'}")
+        st.markdown(f"**Занимаемые ячейки:** {', '.join(p_cells)}")
+        
+        items_df = pd.read_sql("SELECT id, sku, item_name, qty FROM pallet_items WHERE lpn = ?", conn, params=(selected_lpn,))
+        st.markdown("#### Позиции на паллете:")
+        st.dataframe(items_df, use_container_width=True)
+        
+        col_m1, col_m2 = st.columns(2)
+        
+        with col_m1:
+            st.markdown("### 🗑️ Списание паллеты (Освобождение ячеек)")
+            st.warning("При списании паллета удаляется, а все занятые ею ячейки переводятся в статус «Свободна».")
+            if st.button("🔴 Списать паллету полностью"):
+                try:
+                    for cell in p_cells:
+                        cursor.execute("UPDATE locations SET status = 'FREE' WHERE address = ?", (cell,))
+                    
+                    cursor.execute("DELETE FROM pallet_locations WHERE lpn = ?", (selected_lpn,))
+                    cursor.execute("DELETE FROM pallet_items WHERE lpn = ?", (selected_lpn,))
+                    cursor.execute("DELETE FROM pallets WHERE lpn = ?", (selected_lpn,))
+                    
+                    conn.commit()
+                    st.success(f"Паллета {selected_lpn} успешно списана! Ячейки ({', '.join(p_cells)}) снова свободны.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Ошибка при списании: {e}")
+                    
+        with col_m2:
+            st.markdown("### ✏️ Редактирование состава паллеты")
+            with st.form("edit_item_form"):
+                edit_sku = st.text_input("Новый Артикул / SKU")
+                edit_name = st.text_input("Новое Наименование")
+                edit_qty = st.number_input("Количество", min_value=1, value=1)
+                submit_edit = st.form_submit_button("Добавить позицию на паллету")
+                if submit_edit and edit_sku:
+                    cursor.execute("INSERT INTO pallet_items (lpn, sku, item_name, qty) VALUES (?, ?, ?, ?)", 
+                                   (selected_lpn, edit_sku, edit_name, edit_qty))
+                    conn.commit()
+                    st.success("Позиция успешно добавлена на паллету!")
+                    st.rerun()
+
+# --- РАЗДЕЛ 5: ПЕЧАТЬ ЛИСТОВ А4 И ОТЧЕТЫ ---
 elif st.session_state.page == "reports":
     st.header("🖨️ Паллетные листы А4 с попозиционной номенклатурой")
     
@@ -432,7 +529,7 @@ elif st.session_state.page == "reports":
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-# --- РАЗДЕЛ 5: БИЛЛИНГ И СНАПШОТ ---
+# --- РАЗДЕЛ 6: БИЛЛИНГ И СНАПШОТ ---
 elif st.session_state.page == "billing":
     st.header("📊 Автоматический расчет хранения (Снапшот остатков)")
     st.write("Расчет строится на основе фактически занятых ячеек (паллето-мест) с учетом индивидуальных тарифов.")

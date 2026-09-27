@@ -65,20 +65,28 @@ def init_db():
         email TEXT DEFAULT ''
     )''')
     
-    # Миграция колонок для существующих таблиц клиентов
     for col, col_type in [("phone", "TEXT"), ("email", "TEXT"), ("tariff_A", "REAL DEFAULT 30.0"), ("tariff_B", "REAL DEFAULT 20.0")]:
         try:
             cursor.execute(f"ALTER TABLE clients ADD COLUMN {col} {col_type}")
         except sqlite3.OperationalError:
             pass
 
-    # Таблица для дополнительных тарифов на услуги
     cursor.execute('''CREATE TABLE IF NOT EXISTS client_tariffs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         client_name TEXT,
         service_name TEXT,
         price REAL,
         FOREIGN KEY(client_name) REFERENCES clients(name)
+    )''')
+    
+    # Таблица дополнительных услуг по партиям прихода
+    cursor.execute('''CREATE TABLE IF NOT EXISTS inbound_services (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        batch_name TEXT,
+        client TEXT,
+        service_name TEXT,
+        qty REAL,
+        price REAL
     )''')
     
     cursor.execute('''CREATE TABLE IF NOT EXISTS locations (
@@ -253,7 +261,6 @@ elif st.session_state.page == "client_detail":
     cursor.execute("SELECT tariff_A, tariff_B, phone, email FROM clients WHERE name = ?", (c_name,))
     c_info = cursor.fetchone()
     
-    # Блок редактирования данных клиента
     with st.expander("✏️ Редактировать данные клиента и тарифы хранения"):
         with st.form("edit_client_form"):
             new_name = st.text_input("Название компании", value=c_name)
@@ -270,6 +277,7 @@ elif st.session_state.page == "client_detail":
                     if new_name != c_name:
                         cursor.execute("UPDATE pallets SET client = ? WHERE client = ?", (new_name, c_name))
                         cursor.execute("UPDATE client_tariffs SET client_name = ? WHERE client_name = ?", (new_name, c_name))
+                        cursor.execute("UPDATE inbound_services SET client = ? WHERE client = ?", (new_name, c_name))
                         st.session_state.selected_client = new_name
                     conn.commit()
                     st.success("Данные клиента успешно обновлены!")
@@ -282,7 +290,6 @@ elif st.session_state.page == "client_detail":
     st.markdown(f"• **Тариф Зона А (хранение):** {c_info[0] if c_info else 30.0} руб./день")
     st.markdown(f"• **Тариф Зона B (хранение):** {c_info[1] if c_info else 20.0} руб./день")
     
-    # Секция дополнительных тарифов на услуги
     st.markdown("---")
     st.markdown("#### 📋 Тарифы на дополнительные услуги:")
     services_df = pd.read_sql("SELECT id, service_name as 'Услуга', price as 'Стоимость (руб.)' FROM client_tariffs WHERE client_name = ?", conn, params=(st.session_state.selected_client,))
@@ -384,88 +391,135 @@ elif st.session_state.page == "map":
         st.metric("Найдено ячеек", len(loc_df))
         st.dataframe(loc_df, use_container_width=True)
 
-# --- РАЗДЕЛ 3: ПРИХОД ---
+# --- РАЗДЕЛ 3: ПРИХОД (С ЗАЩИЩЕННЫМИ ДАННЫМИ ШАПКИ И ДОП. УСЛУГАМИ) ---
 elif st.session_state.page == "inbound":
     st.header("📥 Документ прихода партии товаров")
-    st.write("Сформируйте партию целиком. Название паллетов формируется автоматически на основе названия партии.")
+    st.write("Сформируйте партию целиком, укажите паллеты и добавьте сопутствующие услуги.")
     
     clients_list = pd.read_sql("SELECT name FROM clients", conn)["name"].tolist()
     
     if not clients_list:
         st.warning("Сначала добавьте хотя бы одного клиента в разделе «Клиенты и тарифы».")
     else:
+        # Инициализация состояния шапки прихода
+        if "inb_header" not in st.session_state:
+            st.session_state.inb_header = {
+                "client": clients_list[0],
+                "batch": f"Партия-{random.randint(100, 999)}",
+                "date": date.today(),
+                "status": "Активный",
+                "count": 2
+            }
+
         with st.container():
             st.markdown("### Шапка приходного документа")
             col_h1, col_h2 = st.columns(2)
             with col_h1:
-                inb_client = st.selectbox("Клиент (Поклажедатель)", clients_list)
-                inb_batch = st.text_input("Название всей партии / Накладной", value=f"Партия-{random.randint(100, 999)}")
+                st.session_state.inb_header["client"] = st.selectbox("Клиент (Поклажедатель)", clients_list, index=clients_list.index(st.session_state.inb_header["client"]) if st.session_state.inb_header["client"] in clients_list else 0)
+                st.session_state.inb_header["batch"] = st.text_input("Название всей партии / Накладной", value=st.session_state.inb_header["batch"])
             with col_h2:
-                inb_date = st.date_input("Дата прихода", value=date.today())
-                inb_status = st.selectbox("Статус документа", ["Активный", "Отложено (Черновик)"])
-                inb_count = st.number_input("Общее количество паллет", min_value=1, max_value=100, value=2)
+                st.session_state.inb_header["date"] = st.date_input("Дата прихода", value=st.session_state.inb_header["date"])
+                st.session_state.inb_header["status"] = st.selectbox("Статус документа", ["Активный", "Отложено (Черновик)"], index=0 if st.session_state.inb_header["status"]=="Активный" else 1)
+                st.session_state.inb_header["count"] = st.number_input("Общее количество паллет", min_value=1, max_value=100, value=int(st.session_state.inb_header["count"]))
+
+        current_batch_name = st.session_state.inb_header["batch"]
 
         if "wizard_step" not in st.session_state:
             st.session_state.wizard_step = 1
 
-        if st.button("📄 Сгенерировать страницы паллет для заполнения"):
+        if st.button("📄 Сгенерировать страницы паллет и услуг"):
             st.session_state.wizard_pallets = []
-            for i in range(inb_count):
+            for i in range(int(st.session_state.inb_header["count"])):
                 st.session_state.wizard_pallets.append({
-                    "pallet_name": f"{inb_batch} - Паллета {i+1}",
+                    "pallet_name": f"{current_batch_name} - Паллета {i+1}",
                     "cell": "",
                     "items": [{"sku": f"SKU-{i+1:03d}", "name": f"Товар {i+1}", "qty": 10}]
                 })
+            
+            # Инициализация списка доп. услуг для партии
+            if "wizard_services" not in st.session_state:
+                st.session_state.wizard_services = []
+
             st.session_state.wizard_step = 2
             st.rerun()
 
         if st.session_state.get("wizard_step", 1) == 2 and "wizard_pallets" in st.session_state:
             st.markdown("---")
-            st.subheader(f"Заполнение паллет для партии: {inb_batch} ({len(st.session_state.wizard_pallets)} шт.)")
+            st.subheader(f"Заполнение партии: {current_batch_name}")
             
-            cursor = conn.cursor()
-            cursor.execute("SELECT address, status FROM locations")
-            all_cells_status = {row[0]: row[1] for row in cursor.fetchall()}
-            all_cells_list = list(all_cells_status.keys())
+            # --- ВКЛАДКА УСЛУГ И ПАЛЛЕТ ---
+            tab_pallets, tab_services = st.tabs(["📦 Паллеты и ячейки", "🛠️ Дополнительные услуги при приеме"])
+            
+            with tab_services:
+                st.markdown("#### Добавить услуги к этой партии (войдут в счет на оплату):")
+                if "wizard_services" not in st.session_state:
+                    st.session_state.wizard_services = []
 
-            for idx, pal in enumerate(st.session_state.wizard_pallets):
-                with st.expander(f"📦 Паллета #{idx+1} ({pal['pallet_name']})", expanded=(idx==0)):
-                    col_p1, col_p2 = st.columns([1, 2])
-                    with col_p1:
-                        pal["pallet_name"] = st.text_input(f"Название паллета #{idx+1}", value=pal["pallet_name"], key=f"wiz_lpn_{idx}")
-                    with col_p2:
-                        cell_options = []
-                        for c in all_cells_list:
-                            st_val = all_cells_status.get(c, 'Свободна')
-                            if st_val == 'Занята':
-                                cell_options.append(f"🔴 [Занята] {c}")
-                            else:
-                                cell_options.append(f"🟢 [Свободна] {c}")
+                if st.button("➕ Добавить услугу в партию"):
+                    st.session_state.wizard_services.append({"service": "Погрузочно-разгрузочные работы", "qty": 1.0, "price": 500.0})
+                    st.rerun()
+
+                for s_idx, s_item in enumerate(st.session_state.wizard_services):
+                    sc1, sc2, sc3, sc4 = st.columns([3, 1, 1, 1])
+                    with sc1:
+                        s_item["service"] = st.text_input("Название услуги", value=s_item["service"], key=f"srv_name_{s_idx}")
+                    with sc2:
+                        s_item["qty"] = st.number_input("Кол-во", value=float(s_item["qty"]), min_value=0.1, key=f"srv_qty_{s_idx}")
+                    with sc3:
+                        s_item["price"] = st.number_input("Цена (руб.)", value=float(s_item["price"]), min_value=0.0, key=f"srv_price_{s_idx}")
+                    with sc4:
+                        if st.button("🗑️ Удали", key=f"srv_del_{s_idx}"):
+                            st.session_state.wizard_services.pop(s_idx)
+                            st.rerun()
+
+            with tab_pallets:
+                cursor = conn.cursor()
+                cursor.execute("SELECT address, status FROM locations")
+                all_cells_status = {row[0]: row[1] for row in cursor.fetchall()}
+                all_cells_list = list(all_cells_status.keys())
+
+                for idx, pal in enumerate(st.session_state.wizard_pallets):
+                    with st.expander(f"📦 Паллета #{idx+1} ({pal['pallet_name']})", expanded=(idx==0)):
+                        col_p1, col_p2 = st.columns([1, 2])
+                        with col_p1:
+                            pal["pallet_name"] = st.text_input(f"Название паллета #{idx+1}", value=pal["pallet_name"], key=f"wiz_lpn_{idx}")
+                        with col_p2:
+                            cell_options = []
+                            for c in all_cells_list:
+                                st_val = all_cells_status.get(c, 'Свободна')
+                                if st_val == 'Занята':
+                                    cell_options.append(f"🔴 [Занята] {c}")
+                                else:
+                                    cell_options.append(f"🟢 [Свободна] {c}")
+                            
+                            selected_cell_display = st.selectbox(f"Ячейка размещения #{idx+1} (Формат А-1-1-1)", cell_options, key=f"wiz_cell_{idx}")
+                            pal["cell"] = selected_cell_display.split("] ")[1] if "] " in selected_cell_display else selected_cell_display
                         
-                        selected_cell_display = st.selectbox(f"Ячейка размещения #{idx+1} (Формат А-1-1-1)", cell_options, key=f"wiz_cell_{idx}")
-                        pal["cell"] = selected_cell_display.split("] ")[1] if "] " in selected_cell_display else selected_cell_display
-                    
-                    st.write("Позиции на паллете:")
-                    for item_idx, itm in enumerate(pal["items"]):
-                        ic1, ic2, ic3, ic4 = st.columns([2, 3, 1, 1])
-                        with ic1:
-                            itm["sku"] = st.text_input("Артикул", value=itm["sku"], key=f"wiz_sku_{idx}_{item_idx}")
-                        with ic2:
-                            itm["name"] = st.text_input("Наименование", value=itm["name"], key=f"wiz_name_{idx}_{item_idx}")
-                        with ic3:
-                            itm["qty"] = st.number_input("Кол-во", value=itm["qty"], min_value=1, key=f"wiz_qty_{idx}_{item_idx}")
-                        with ic4:
-                            if st.button("🗑️ Удали", key=f"wiz_del_item_{idx}_{item_idx}"):
-                                pal["items"].pop(item_idx)
-                                st.rerun()
-                                
-                    if st.button("➕ Добавить позицию", key=f"wiz_add_item_{idx}"):
-                        pal["items"].append({"sku": "SKU-999", "name": "Новый товар", "qty": 5})
-                        st.rerun()
+                        st.write("Позиции на паллете:")
+                        for item_idx, itm in enumerate(pal["items"]):
+                            ic1, ic2, ic3, ic4 = st.columns([2, 3, 1, 1])
+                            with ic1:
+                                itm["sku"] = st.text_input("Артикул", value=itm["sku"], key=f"wiz_sku_{idx}_{item_idx}")
+                            with ic2:
+                                itm["name"] = st.text_input("Наименование", value=itm["name"], key=f"wiz_name_{idx}_{item_idx}")
+                            with ic3:
+                                itm["qty"] = st.number_input("Кол-во", value=itm["qty"], min_value=1, key=f"wiz_qty_{idx}_{item_idx}")
+                            with ic4:
+                                if st.button("🗑️ Удали", key=f"wiz_del_item_{idx}_{item_idx}"):
+                                    pal["items"].pop(item_idx)
+                                    st.rerun()
+                                    
+                        if st.button("➕ Добавить позицию", key=f"wiz_add_item_{idx}"):
+                            pal["items"].append({"sku": "SKU-999", "name": "Новый товар", "qty": 5})
+                            st.rerun()
 
             st.markdown("---")
             if st.button("💾 Провести и сохранить приходную партию"):
                 try:
+                    inb_client = st.session_state.inb_header["client"]
+                    inb_date = st.session_state.inb_header["date"]
+                    inb_status = st.session_state.inb_header["status"]
+
                     occupied_warnings = []
                     for pal in st.session_state.wizard_pallets:
                         c_stat = all_cells_status.get(pal["cell"], 'Свободна')
@@ -475,12 +529,13 @@ elif st.session_state.page == "inbound":
                     if occupied_warnings:
                         st.warning(f"⚠️ Предупреждение: Вы выбрали уже занятые ячейки: {', '.join(set(occupied_warnings))}. Размещение разрешено.")
                     
+                    # Сохранение паллет
                     for pal in st.session_state.wizard_pallets:
                         lpn = pal["pallet_name"]
                         cell = pal["cell"]
                         
                         cursor.execute("INSERT OR REPLACE INTO pallets (lpn, client, batch_name, arrival_date, status) VALUES (?, ?, ?, ?, ?)", 
-                                       (lpn, inb_client, inb_batch, str(inb_date), inb_status))
+                                       (lpn, inb_client, current_batch_name, str(inb_date), inb_status))
                         
                         if inb_status == "Активный" and cell:
                             cursor.execute("INSERT OR REPLACE INTO pallet_locations (lpn, address) VALUES (?, ?)", (lpn, cell))
@@ -489,11 +544,18 @@ elif st.session_state.page == "inbound":
                         for itm in pal["items"]:
                             cursor.execute("INSERT INTO pallet_items (lpn, sku, item_name, qty) VALUES (?, ?, ?, ?)", 
                                            (lpn, itm["sku"], itm["name"], itm["qty"]))
+
+                    # Сохранение дополнительных услуг
+                    if "wizard_services" in st.session_state:
+                        for srv in st.session_state.wizard_services:
+                            cursor.execute("INSERT INTO inbound_services (batch_name, client, service_name, qty, price) VALUES (?, ?, ?, ?, ?)",
+                                           (current_batch_name, inb_client, srv["service"], srv["qty"], srv["price"]))
                             
                     conn.commit()
-                    st.success(f"Приход партии '{inb_batch}' успешно сохранен! Статус: {inb_status}.")
+                    st.success(f"Приход партии '{current_batch_name}' успешно сохранен! Статус: {inb_status}.")
                     st.session_state.wizard_step = 1
                     st.session_state.wizard_pallets = []
+                    st.session_state.wizard_services = []
                     st.rerun()
                 except Exception as e:
                     st.error(f"Ошибка при сохранении: {e}")
@@ -619,13 +681,13 @@ elif st.session_state.page == "reports":
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-# --- РАЗДЕЛ 6: БИЛЛИНГ И СНАПШОТ ---
+# --- РАЗДЕЛ 6: БИЛЛИНГ И СНАПШОТ (УЧИТЫВАЕТ ХРАНЕНИЕ И ДОП. УСЛУГИ) ---
 elif st.session_state.page == "billing":
-    st.header("📊 Автоматический расчет хранения (Снапшот остатков)")
-    st.write("Расчет строится на основе фактически занятых ячеек с учетом тарифов.")
+    st.header("📊 Автоматический расчет счетов (Хранение + Доп. услуги)")
+    st.write("Расчет строится на основе фактически занятых ячеек хранения и зарегистрированных дополнительных услуг при приеме.")
     
     if st.button("Сделать срез (Snapshot) и рассчитать счета"):
-        billing_query = """
+        storage_query = """
             SELECT p.client, l.zone, COUNT(DISTINCT pl.address) as occupied_slots
             FROM pallets p
             JOIN pallet_locations pl ON p.lpn = pl.lpn
@@ -633,33 +695,39 @@ elif st.session_state.page == "billing":
             WHERE p.status = 'Активный'
             GROUP BY p.client, l.zone
         """
-        snapshot_df = pd.read_sql(billing_query, conn)
+        snapshot_df = pd.read_sql(storage_query, conn)
         clients_df = pd.read_sql("SELECT * FROM clients", conn)
+        services_df = pd.read_sql("SELECT client, SUM(qty * price) as services_total FROM inbound_services GROUP BY client", conn)
         
-        if not snapshot_df.empty and not clients_df.empty:
+        services_dict = services_df.set_index("client")["services_total"].to_dict() if not services_df.empty else {}
+
+        if not clients_df.empty:
             client_tariffs = clients_df.set_index("name").to_dict(orient="index")
             
             billing_results = []
-            clients_in_snap = snapshot_df["client"].unique()
+            all_clients = clients_df["name"].unique()
             
-            for c_name in clients_in_snap:
+            for c_name in all_clients:
                 t_a = client_tariffs.get(c_name, {}).get("tariff_A", 30.0)
                 t_b = client_tariffs.get(c_name, {}).get("tariff_B", 20.0)
                 
-                slots_a = snapshot_df[(snapshot_df["client"] == c_name) & (snapshot_df["zone"] == "A")]["occupied_slots"].sum()
-                slots_b = snapshot_df[(snapshot_df["client"] == c_name) & (snapshot_df["zone"] == "B")]["occupied_slots"].sum()
+                slots_a = snapshot_df[(snapshot_df["client"] == c_name) & (snapshot_df["zone"] == "A")]["occupied_slots"].sum() if not snapshot_df.empty else 0
+                slots_b = snapshot_df[(snapshot_df["client"] == c_name) & (snapshot_df["zone"] == "B")]["occupied_slots"].sum() if not snapshot_df.empty else 0
                 
-                cost_a = slots_a * t_a
-                cost_b = slots_b * t_b
-                total = cost_a + cost_b
+                cost_storage_a = slots_a * t_a
+                cost_storage_b = slots_b * t_b
+                storage_total = cost_storage_a + cost_storage_b
+                
+                services_cost = services_dict.get(c_name, 0.0)
+                grand_total = storage_total + services_cost
                 
                 billing_results.append({
                     "Клиент": c_name,
-                    "Ячеек в Зоне А": int(slots_a),
-                    "Ячеек в Зоне B": int(slots_b),
-                    "Сумма за Зону А (руб.)": cost_a,
-                    "Сумма за Зону B (руб.)": cost_b,
-                    "ИТОГО К ОПЛАТЕ (руб.)": total
+                    "Ячеек Зона А": int(slots_a),
+                    "Ячеек Зона B": int(slots_b),
+                    "Сумма за хранение (руб.)": storage_total,
+                    "Услуги при приеме (руб.)": services_cost,
+                    "ИТОГО К ОПЛАТЕ (руб.)": grand_total
                 })
                 
             res_df = pd.DataFrame(billing_results)
@@ -673,6 +741,6 @@ elif st.session_state.page == "billing":
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         else:
-            st.info("Нет данных для расчета (склад пуст или нет активных паллет).")
+            st.info("Нет зарегистрированных клиентов для расчета.")
 
 conn.close()

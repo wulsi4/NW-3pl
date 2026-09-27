@@ -60,13 +60,31 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT UNIQUE,
         tariff_A REAL DEFAULT 30.0,
-        tariff_B REAL DEFAULT 20.0
+        tariff_B REAL DEFAULT 20.0,
+        phone TEXT DEFAULT '',
+        email TEXT DEFAULT ''
+    )''')
+    
+    # Миграция колонок для существующих таблиц клиентов
+    for col, col_type in [("phone", "TEXT"), ("email", "TEXT"), ("tariff_A", "REAL DEFAULT 30.0"), ("tariff_B", "REAL DEFAULT 20.0")]:
+        try:
+            cursor.execute(f"ALTER TABLE clients ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass
+
+    # Таблица для дополнительных тарифов на услуги
+    cursor.execute('''CREATE TABLE IF NOT EXISTS client_tariffs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_name TEXT,
+        service_name TEXT,
+        price REAL,
+        FOREIGN KEY(client_name) REFERENCES clients(name)
     )''')
     
     cursor.execute('''CREATE TABLE IF NOT EXISTS locations (
         address TEXT PRIMARY KEY,
         zone TEXT,
-        status TEXT DEFAULT 'FREE'
+        status TEXT DEFAULT 'Свободна'
     )''')
     
     cursor.execute('''CREATE TABLE IF NOT EXISTS pallets (
@@ -74,12 +92,11 @@ def init_db():
         client TEXT
     )''')
     
-    # Безохпасное добавление новых колонок для существующих баз данных
     for col, col_type in [("batch_name", "TEXT"), ("arrival_date", "TEXT"), ("status", "TEXT")]:
         try:
             cursor.execute(f"ALTER TABLE pallets ADD COLUMN {col} {col_type}")
         except sqlite3.OperationalError:
-            pass # Колонка уже существует
+            pass
     
     cursor.execute('''CREATE TABLE IF NOT EXISTS pallet_locations (
         lpn TEXT,
@@ -106,10 +123,10 @@ def init_db():
                 for tier in range(1, 6):
                     for pos in range(1, 4):
                         addr = f"{aisle}-{sec}-{tier}-{pos}"
-                        locs.append((addr, "A", "FREE"))
+                        locs.append((addr, "A", "Свободна"))
         for i in range(1, 151):
             addr = f"B-{i:03d}"
-            locs.append((addr, "B", "FREE"))
+            locs.append((addr, "B", "Свободна"))
         cursor.executemany("INSERT OR IGNORE INTO locations (address, zone, status) VALUES (?, ?, ?)", locs)
         conn.commit()
     conn.close()
@@ -176,11 +193,13 @@ if st.session_state.page == "clients":
     with st.expander("➕ Добавить нового клиента"):
         with st.form("add_client_form"):
             c_name = st.text_input("Название компании")
+            c_phone = st.text_input("Телефон")
+            c_email = st.text_input("Электронная почта")
             submitted = st.form_submit_button("Зарегистрировать клиента")
             if submitted and c_name:
                 try:
                     cursor = conn.cursor()
-                    cursor.execute("INSERT INTO clients (name) VALUES (?)", (c_name,))
+                    cursor.execute("INSERT INTO clients (name, phone, email) VALUES (?, ?, ?)", (c_name, c_phone, c_email))
                     conn.commit()
                     st.success(f"Клиент '{c_name}' успешно зарегистрирован!")
                     st.rerun()
@@ -202,6 +221,8 @@ if st.session_state.page == "clients":
             
             summary_data.append({
                 "Клиент": c_name,
+                "Телефон": row['phone'],
+                "Email": row['email'],
                 "Всего паллет": pallets_count,
                 "Занято ячеек": cells_count
             })
@@ -229,15 +250,65 @@ elif st.session_state.page == "client_detail":
     st.header(f"🏢 Карточка клиента: {c_name}")
     
     cursor = conn.cursor()
-    cursor.execute("SELECT tariff_A, tariff_B FROM clients WHERE name = ?", (c_name,))
-    t_data = cursor.fetchone()
-    if t_data:
-        st.write(f"• Тариф Зона А: {t_data[0]} руб./день")
-        st.write(f"• Тариф Зона B: {t_data[1]} руб./день")
+    cursor.execute("SELECT tariff_A, tariff_B, phone, email FROM clients WHERE name = ?", (c_name,))
+    c_info = cursor.fetchone()
+    
+    # Блок редактирования данных клиента
+    with st.expander("✏️ Редактировать данные клиента и тарифы хранения"):
+        with st.form("edit_client_form"):
+            new_name = st.text_input("Название компании", value=c_name)
+            new_phone = st.text_input("Телефон", value=c_info[2] if c_info and c_info[2] else "")
+            new_email = st.text_input("Email", value=c_info[3] if c_info and c_info[3] else "")
+            new_t_a = st.number_input("Тариф Зона А (руб/день)", value=c_info[0] if c_info else 30.0)
+            new_t_b = st.number_input("Тариф Зона B (руб/день)", value=c_info[1] if c_info else 20.0)
+            
+            submit_edit = st.form_submit_button("Сохранить изменения")
+            if submit_edit:
+                try:
+                    cursor.execute("UPDATE clients SET name = ?, phone = ?, email = ?, tariff_A = ?, tariff_B = ? WHERE name = ?", 
+                                   (new_name, new_phone, new_email, new_t_a, new_t_b, c_name))
+                    if new_name != c_name:
+                        cursor.execute("UPDATE pallets SET client = ? WHERE client = ?", (new_name, c_name))
+                        cursor.execute("UPDATE client_tariffs SET client_name = ? WHERE client_name = ?", (new_name, c_name))
+                        st.session_state.selected_client = new_name
+                    conn.commit()
+                    st.success("Данные клиента успешно обновлены!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Ошибка при обновлении: {e}")
+
+    st.markdown(f"📞 **Телефон:** {c_info[2] if c_info and c_info[2] else 'Не указан'}")
+    st.markdown(f"📧 **Email:** {c_info[3] if c_info and c_info[3] else 'Не указан'}")
+    st.markdown(f"• **Тариф Зона А (хранение):** {c_info[0] if c_info else 30.0} руб./день")
+    st.markdown(f"• **Тариф Зона B (хранение):** {c_info[1] if c_info else 20.0} руб./день")
+    
+    # Секция дополнительных тарифов на услуги
+    st.markdown("---")
+    st.markdown("#### 📋 Тарифы на дополнительные услуги:")
+    services_df = pd.read_sql("SELECT id, service_name as 'Услуга', price as 'Стоимость (руб.)' FROM client_tariffs WHERE client_name = ?", conn, params=(st.session_state.selected_client,))
+    if not services_df.empty:
+        st.dataframe(services_df.drop(columns=['id']), use_container_width=True)
+    else:
+        st.info("Дополнительные тарифы на услуги не заведены.")
         
-    st.markdown("#### Активные паллеты и ячейки:")
+    with st.form("add_service_tariff_form"):
+        st.markdown("**Добавить тариф на новый вид услуги:**")
+        col_s1, col_s2 = st.columns([2, 1])
+        with col_s1:
+            s_name = st.text_input("Название услуги (например: Погрузка, Упаковка, Маркировка)")
+        with col_s2:
+            s_price = st.number_input("Стоимость (руб.)", min_value=0.0, value=100.0)
+        sub_serv = st.form_submit_button("Добавить услугу")
+        if sub_serv and s_name:
+            cursor.execute("INSERT INTO client_tariffs (client_name, service_name, price) VALUES (?, ?, ?)", (st.session_state.selected_client, s_name, s_price))
+            conn.commit()
+            st.success(f"Услуга '{s_name}' успешно добавлена!")
+            st.rerun()
+
+    st.markdown("---")
+    st.markdown("#### 📦 Активные паллеты и ячейки клиента:")
     client_pallets_df = pd.read_sql("""
-        SELECT p.lpn as 'LPN Паллеты', p.batch_name as 'Партия', p.arrival_date as 'Дата', p.status as 'Статус', GROUP_CONCAT(pl.address) as 'Ячейки'
+        SELECT p.lpn as 'Название паллета', p.batch_name as 'Партия', p.arrival_date as 'Дата', p.status as 'Статус', GROUP_CONCAT(pl.address) as 'Ячейки'
         FROM pallets p
         LEFT JOIN pallet_locations pl ON p.lpn = pl.lpn
         WHERE p.client = ?
@@ -249,7 +320,7 @@ elif st.session_state.page == "client_detail":
         
         st.markdown("#### Детализированная номенклатура товаров:")
         client_items_df = pd.read_sql("""
-            SELECT pi.lpn as 'LPN', pi.sku as 'SKU / Артикул', pi.item_name as 'Наименование', pi.qty as 'Количество'
+            SELECT pi.lpn as 'Название паллета', pi.sku as 'SKU / Артикул', pi.item_name as 'Наименование', pi.qty as 'Количество'
             FROM pallet_items pi
             JOIN pallets p ON pi.lpn = p.lpn
             WHERE p.client = ?
@@ -261,9 +332,9 @@ elif st.session_state.page == "client_detail":
     else:
         st.info("У данного клиента нет активных паллет на складе.")
 
-# --- РАЗДЕЛ 2: КАРТА СКЛАДА С ПОИСКОМ ПО КЛИЕНТАМ ---
+# --- РАЗДЕЛ 2: КАРТА СКЛАДА ---
 elif st.session_state.page == "map":
-    st.header("🗺️ Интерактивная карта и поиск ячеек по клиентам")
+    st.header("🗺️ Интерактивная карта и поиск ячеек")
     
     clients_list = ["Все клиенты"] + pd.read_sql("SELECT name FROM clients", conn)["name"].tolist()
     
@@ -273,44 +344,50 @@ elif st.session_state.page == "map":
     with col2:
         zone_filter = st.selectbox("Фильтр по зоне", ["Все", "Зона А (Стеллажи)", "Зона B (2-й этаж)"])
     with col3:
-        status_filter = st.selectbox("Статус ячейки", ["Все", "Свободные (FREE)", "Занятые (OCCUPIED)"])
+        status_filter = st.selectbox("Статус ячейки", ["Все", "Свободна", "Занята"])
+    
+    query = """
+        SELECT l.address as 'Адрес', l.zone as 'Зона', l.status as 'Статус', 
+               COALESCE(p.lpn, '-') as 'Название паллета', 
+               COALESCE(p.client, '-') as 'Клиент', 
+               COALESCE(p.batch_name, '-') as 'Партия'
+        FROM locations l
+        LEFT JOIN pallet_locations pl ON l.address = pl.address
+        LEFT JOIN pallets p ON pl.lpn = p.lpn
+        WHERE 1=1
+    """
     
     if client_map_filter != "Все клиенты":
-        query = f"""
-            SELECT l.address, l.zone, l.status, p.lpn, p.client 
-            FROM locations l
-            JOIN pallet_locations pl ON l.address = pl.address
-            JOIN pallets p ON pl.lpn = p.lpn
-            WHERE p.client = '{client_map_filter}'
-        """
-        if zone_filter == "Зона А (Стеллажи)":
-            query += " AND l.zone = 'A'"
-        elif zone_filter == "Зона B (2-й этаж)":
-            query += " AND l.zone = 'B'"
-    else:
-        query = "SELECT address, zone, status, '' as lpn, '' as client FROM locations WHERE 1=1"
-        if zone_filter == "Зона А (Стеллажи)":
-            query += " AND zone = 'A'"
-        elif zone_filter == "Зона B (2-й этаж)":
-            query += " AND zone = 'B'"
-            
-        if status_filter == "Свободные (FREE)":
-            query += " AND status = 'FREE'"
-        elif status_filter == "Занятые (OCCUPIED)":
-            query += " AND status = 'OCCUPIED'"
+        query += f" AND p.client = '{client_map_filter}'"
         
-    loc_df = pd.read_sql(query, conn)
-    search_query = st.text_input("Поиск по конкретному адресу ячейки (например, A-1-1-1 или B-042)")
-    if search_query:
-        loc_df = loc_df[loc_df["address"].str.contains(search_query, case=False)]
-
-    st.metric("Найдено ячеек", len(loc_df))
-    st.dataframe(loc_df.head(150), use_container_width=True)
+    if zone_filter == "Зона А (Стеллажи)":
+        query += " AND l.zone = 'A'"
+    elif zone_filter == "Зона B (2-й этаж)":
+        query += " AND l.zone = 'B'"
+        
+    if status_filter == "Свободна":
+        query += " AND l.status = 'Свободна'"
+    elif status_filter == "Занята":
+        query += " AND l.status = 'Занята'"
+        
+    loc_df = pd.read_sql(query, conn).drop_duplicates(subset=['Адрес'])
+    
+    search_query = st.text_input("Поиск по адресу ячейки (например, A-1-1-1 или B-042)")
+    
+    has_filter = (client_map_filter != "Все клиенты" or zone_filter != "Все" or status_filter != "Все" or bool(search_query))
+    
+    if not has_filter:
+        st.info("💡 Введите поисковый запрос по адресу или выберите фильтры выше, чтобы отобразить ячейки склада.")
+    else:
+        if search_query:
+            loc_df = loc_df[loc_df["Адрес"].str.contains(search_query, case=False)]
+        st.metric("Найдено ячеек", len(loc_df))
+        st.dataframe(loc_df, use_container_width=True)
 
 # --- РАЗДЕЛ 3: ПРИХОД ---
 elif st.session_state.page == "inbound":
     st.header("📥 Документ прихода партии товаров")
-    st.write("Сформируйте партию целиком. Если ячейка занята, появится предупреждение.")
+    st.write("Сформируйте партию целиком. Название паллетов формируется автоматически на основе названия партии.")
     
     clients_list = pd.read_sql("SELECT name FROM clients", conn)["name"].tolist()
     
@@ -335,9 +412,9 @@ elif st.session_state.page == "inbound":
             st.session_state.wizard_pallets = []
             for i in range(inb_count):
                 st.session_state.wizard_pallets.append({
-                    "lpn": f"LPN-{random.randint(1000, 9999)}",
+                    "pallet_name": f"{inb_batch} - Паллета {i+1}",
                     "cell": "",
-                    "items": [{"sku": f"SKU-{i+1:03d}", "name": f"Товар партии {i+1}", "qty": 10}]
+                    "items": [{"sku": f"SKU-{i+1:03d}", "name": f"Товар {i+1}", "qty": 10}]
                 })
             st.session_state.wizard_step = 2
             st.rerun()
@@ -352,18 +429,18 @@ elif st.session_state.page == "inbound":
             all_cells_list = list(all_cells_status.keys())
 
             for idx, pal in enumerate(st.session_state.wizard_pallets):
-                with st.expander(f"📦 Паллета #{idx+1} (LPN: {pal['lpn']})", expanded=(idx==0)):
+                with st.expander(f"📦 Паллета #{idx+1} ({pal['pallet_name']})", expanded=(idx==0)):
                     col_p1, col_p2 = st.columns([1, 2])
                     with col_p1:
-                        pal["lpn"] = st.text_input(f"Номер LPN #{idx+1}", value=pal["lpn"], key=f"wiz_lpn_{idx}")
+                        pal["pallet_name"] = st.text_input(f"Название паллета #{idx+1}", value=pal["pallet_name"], key=f"wiz_lpn_{idx}")
                     with col_p2:
                         cell_options = []
                         for c in all_cells_list:
-                            st_val = all_cells_status.get(c, 'FREE')
-                            if st_val == 'OCCUPIED':
-                                cell_options.append(f"🔴 [ЗАНЯТА] {c}")
+                            st_val = all_cells_status.get(c, 'Свободна')
+                            if st_val == 'Занята':
+                                cell_options.append(f"🔴 [Занята] {c}")
                             else:
-                                cell_options.append(f"🟢 [СВОБОДНА] {c}")
+                                cell_options.append(f"🟢 [Свободна] {c}")
                         
                         selected_cell_display = st.selectbox(f"Ячейка размещения #{idx+1} (Формат А-1-1-1)", cell_options, key=f"wiz_cell_{idx}")
                         pal["cell"] = selected_cell_display.split("] ")[1] if "] " in selected_cell_display else selected_cell_display
@@ -391,15 +468,15 @@ elif st.session_state.page == "inbound":
                 try:
                     occupied_warnings = []
                     for pal in st.session_state.wizard_pallets:
-                        c_stat = all_cells_status.get(pal["cell"], 'FREE')
-                        if c_stat == 'OCCUPIED' and inb_status == "Активный":
+                        c_stat = all_cells_status.get(pal["cell"], 'Свободна')
+                        if c_stat == 'Занята' and inb_status == "Активный":
                             occupied_warnings.append(pal["cell"])
                     
                     if occupied_warnings:
                         st.warning(f"⚠️ Предупреждение: Вы выбрали уже занятые ячейки: {', '.join(set(occupied_warnings))}. Размещение разрешено.")
                     
                     for pal in st.session_state.wizard_pallets:
-                        lpn = pal["lpn"]
+                        lpn = pal["pallet_name"]
                         cell = pal["cell"]
                         
                         cursor.execute("INSERT OR REPLACE INTO pallets (lpn, client, batch_name, arrival_date, status) VALUES (?, ?, ?, ?, ?)", 
@@ -407,7 +484,7 @@ elif st.session_state.page == "inbound":
                         
                         if inb_status == "Активный" and cell:
                             cursor.execute("INSERT OR REPLACE INTO pallet_locations (lpn, address) VALUES (?, ?)", (lpn, cell))
-                            cursor.execute("UPDATE locations SET status = 'OCCUPIED' WHERE address = ?", (cell,))
+                            cursor.execute("UPDATE locations SET status = 'Занята' WHERE address = ?", (cell,))
                         
                         for itm in pal["items"]:
                             cursor.execute("INSERT INTO pallet_items (lpn, sku, item_name, qty) VALUES (?, ?, ?, ?)", 
@@ -423,7 +500,7 @@ elif st.session_state.page == "inbound":
 
     st.subheader("Текущие паллеты на складе")
     pallets_df = pd.read_sql("""
-        SELECT p.lpn as 'LPN', p.client as 'Клиент', p.batch_name as 'Партия', p.arrival_date as 'Дата', p.status as 'Статус', GROUP_CONCAT(pl.address) as 'Ячейки' 
+        SELECT p.lpn as 'Название паллета', p.client as 'Клиент', p.batch_name as 'Партия', p.arrival_date as 'Дата', p.status as 'Статус', GROUP_CONCAT(pl.address) as 'Ячейки' 
         FROM pallets p 
         LEFT JOIN pallet_locations pl ON p.lpn = pl.lpn 
         GROUP BY p.lpn
@@ -443,7 +520,7 @@ elif st.session_state.page == "management":
     if not pallets_list:
         st.info("На складе нет активных паллет для управления.")
     else:
-        selected_lpn = st.selectbox("Выберите паллету (LPN) для управления:", pallets_list)
+        selected_lpn = st.selectbox("Выберите паллету для управления:", pallets_list)
         
         cursor = conn.cursor()
         cursor.execute("SELECT client, batch_name FROM pallets WHERE lpn = ?", (selected_lpn,))
@@ -469,14 +546,14 @@ elif st.session_state.page == "management":
                         cursor.execute("SELECT COUNT(*) FROM pallet_locations WHERE address = ? AND lpn != ?", (cell, selected_lpn))
                         other_pallets_count = cursor.fetchone()[0]
                         if other_pallets_count == 0:
-                            cursor.execute("UPDATE locations SET status = 'FREE' WHERE address = ?", (cell,))
+                            cursor.execute("UPDATE locations SET status = 'Свободна' WHERE address = ?", (cell,))
                     
                     cursor.execute("DELETE FROM pallet_locations WHERE lpn = ?", (selected_lpn,))
                     cursor.execute("DELETE FROM pallet_items WHERE lpn = ?", (selected_lpn,))
                     cursor.execute("DELETE FROM pallets WHERE lpn = ?", (selected_lpn,))
                     
                     conn.commit()
-                    st.success(f"Паллета {selected_lpn} успешно списана!")
+                    st.success(f"Паллета '{selected_lpn}' успешно списана!")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Ошибка при списании: {e}")
@@ -517,7 +594,7 @@ elif st.session_state.page == "reports":
             st.markdown("---")
             st.markdown(f"<h2 style='text-align: center; color: #0284c7;'>📄 ПАЛЛЕТНЫЙ ЛИСТ (A4) — 3PL Nord Wheel</h2>", unsafe_allow_html=True)
             st.markdown(f"### **Клиент:** {p_data[0]} | **Партия:** {p_data[1]} | **Дата:** {p_data[2]}")
-            st.markdown(f"<h1>ID ПАЛЛЕТЫ: {p_lpn}</h1>", unsafe_allow_html=True)
+            st.markdown(f"<h1>НАЗВАНИЕ ПАЛЛЕТА: {p_lpn}</h1>", unsafe_allow_html=True)
             st.markdown(f"**Ячейки размещения:** {', '.join(locs_data)}")
             st.markdown("#### Позиционный состав груза (для сборки):")
             st.dataframe(items_data, use_container_width=True)
@@ -527,7 +604,7 @@ elif st.session_state.page == "reports":
             
     st.subheader("Экспорт всех данных в Excel")
     full_pallets_df = pd.read_sql("""
-        SELECT p.lpn as 'Номер паллеты', p.client as 'Клиент', p.batch_name as 'Партия', p.arrival_date as 'Дата прихода', GROUP_CONCAT(pl.address) as 'Ячейки' 
+        SELECT p.lpn as 'Название паллета', p.client as 'Клиент', p.batch_name as 'Партия', p.arrival_date as 'Дата прихода', GROUP_CONCAT(pl.address) as 'Ячейки' 
         FROM pallets p 
         LEFT JOIN pallet_locations pl ON p.lpn = pl.lpn 
         GROUP BY p.lpn
